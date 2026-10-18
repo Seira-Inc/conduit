@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Conduit — connect what you use</title><link rel="stylesheet" href="/static/style.css"><script src="/static/app.js" defer></script></head>
+<body>
+<header><a class="brand" href="/" aria-label="Conduit home"><span class="brandmark">c</span>conduit<span class="lab">LAB / 01</span></a><span class="local"><i></i> Running on your computer</span></header>
+<main>
+  <section class="hero"><div class="eyebrow">FROM INTERFACE TO INTELLIGENCE</div><h1>Anything you use.<br><span>Now within reach.</span></h1><p>Give your AI the ability to operate a website or app.<br>Start with a URL. No API specification needed.</p><div class="capabilities"><span>Read & create</span><span>Edit & delete</span><span>Draw & erase</span></div></section>
+  <div class="workspace">
+    <section class="panel builder"><div class="section-title"><span class="step">01</span><h2>Make a connection</h2></div>
+      <div class="tabs" role="tablist" aria-label="Connection type"><button id="web-tab" role="tab" aria-selected="true" class="active">Website</button><button id="desktop-tab" role="tab" aria-selected="false">Windows app</button></div>
+      <form id="build-form">
+        <label id="target-label" for="target">Website address</label><div class="input-wrap"><span id="target-icon">↗</span><input id="target" name="target" placeholder="https://excalidraw.com" required autocomplete="off"></div>
+        <div id="web-examples" class="examples"><span>Try</span><button type="button" data-url="https://excalidraw.com">Excalidraw</button><button type="button" data-url="https://en.wikipedia.org">Wikipedia</button><button type="button" id="demo">Local playground</button></div>
+        <div id="app-picker" hidden><label for="app-search">Find an installed app</label><input id="app-search" placeholder="Search installed apps…"><select id="apps" size="5" aria-label="Installed apps"></select><p class="hint">Or enter the app name or full .exe path above.</p></div>
+        <label for="tasks">What should it do? <span class="optional">Optional</span></label><textarea id="tasks" rows="2" placeholder="Create a card&#10;Draw a rectangle and add a label"></textarea><p class="hint">One named task per line. These use a configured vision model. Interface tools work with your connected AI immediately.</p>
+        <details><summary>Extra context & connection options</summary><label for="name">Connection name</label><input id="name" placeholder="My workspace"><label for="notes">Anything that helps it understand the app</label><textarea id="notes" rows="3" placeholder="Useful instructions, shortcuts, or details about your workflow"></textarea><div id="web-options"><label for="spec">API description URL <span class="optional">Only if you have one</span></label><input id="spec" placeholder="https://example.com/openapi.json"><label for="origins">Additional allowed origins</label><input id="origins" placeholder="https://api.example.com"><p class="hint">Comma-separated origins for a separate API or app domain.</p><label class="check"><input id="private" type="checkbox">Allow a local or private network website</label></div></details>
+        <button class="primary build-button" id="build-button" type="submit"><span>Create connector</span><span>↗</span></button>
+      </form>
+      <div class="progress" id="progress" role="status" aria-live="polite" hidden></div>
+      <div class="builder-footer"><span class="tiny-mark">◇</span><p>Explores the interface, builds executable tools,<br>and packages an MCP server you can take with you.</p></div>
+    </section>
+    <section class="panel library"><div class="section-title"><span class="step">02</span><h2>Your connections</h2><span id="connection-count" class="count">0</span></div><div id="connectors"></div><div id="empty" class="empty"><div class="connection-art"><span>↗</span><i></i><span>✳</span></div><h3>Your next tool starts here.</h3><p>Connect a site or app to see its discovered capabilities and try them out.</p><span class="empty-note">LOCAL BY DEFAULT · YOUR LOGIN STAYS HERE</span></div></section>
+  </div>
+  <section class="panel detail" id="detail" hidden aria-live="polite">
+    <div class="detail-heading"><div><div class="eyebrow">CONNECTION WORKSPACE</div><h2 id="detail-name"></h2><p id="detail-target" class="muted"></p></div><button class="quiet" id="close-detail" aria-label="Close connection workspace">✕</button></div>
+    <div class="toolbar"><button id="inspect">Inspect interface</button><button id="see-screen">See screen</button><button id="login">Open login</button><button id="finish-login" hidden>Finish login</button><button id="refresh">Refresh discovery</button><button id="release">Release preview</button><select id="client-format" aria-label="MCP settings format"><option value="codex">Codex</option><option value="json">Other client (JSON)</option></select><button id="copy-config">Copy MCP settings</button><a id="export" class="button primary" download>Download connector ↗</a></div>
+    <form id="task-form" class="task-composer"><label for="task-request">Tell this connection what to do</label><textarea id="task-request" rows="2" required placeholder="Draw a rectangle, add the label My idea, then move it to the center"></textarea><div class="task-actions"><p class="hint" id="runner-model">Uses the available vision model to inspect, act, and check the result.</p><button type="button" id="stop-task" hidden>Stop</button><button class="primary" id="run-task" type="submit">Run task ↗</button></div><div class="progress" id="task-progress" role="status" aria-live="polite" hidden></div></form>
+    <div id="detail-notice" class="notice" hidden></div>
+    <div class="result-area" id="result-area" hidden><div class="result-heading"><h3>Live result</h3><button class="quiet" id="clear-result">Clear</button></div><img id="screen" alt="Live connector screenshot" hidden><pre id="result"></pre></div>
+    <div class="detail-grid"><div><h3>Tools <span id="tools-count" class="count"></span></h3><p class="hint">Actions operate the real app. Inspect the result after making a change.</p><div id="tool-list"></div></div><aside><h3>What Conduit found</h3><div id="findings"></div><div id="warnings"></div><details><summary>MCP connection settings</summary><p class="hint">Add these settings to a client that supports local MCP servers. It launches the connector for you.</p><pre id="config"></pre></details><div id="model-status" class="model-note"></div></aside></div>
+  </section>
+  <footer><span>CONDUIT / EXPERIMENTAL BUILD</span><span>Interfaces first. APIs when they help.</span></footer>
+</main><div id="toast" role="status" aria-live="polite" hidden></div>
+</body></html>

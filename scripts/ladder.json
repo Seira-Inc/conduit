@@ -1,0 +1,131 @@
+{
+  "rungs": [
+    {
+      "id": "vikunja",
+      "url": "https://try.vikunja.io/projects",
+      "task": "Create, read, rename and delete disposable projects only",
+      "notes": "Only create, edit and delete projects whose titles start with Conduit. Never touch other projects, users, teams or settings.",
+      "rounds": 10,
+      "login": {
+        "user": "demo",
+        "pass_env": "LADDER_VIKUNJA_PASS",
+        "url": "https://try.vikunja.io/login",
+        "user_label": "Username Or Email Address",
+        "pass_label": "Password",
+        "submit": "^login$"
+      },
+      "observer": {
+        "read_url": "https://try.vikunja.io/api/v2/projects/{id}",
+        "auth": "bearer",
+        "auth_host": "https://try.vikunja.io",
+        "fields": {
+          "title": "title"
+        },
+        "ignore": [
+          "updated"
+        ]
+      },
+      "enabled": true
+    },
+    {
+      "id": "espocrm",
+      "url": "https://demo.us.espocrm.com/",
+      "task": "Create, read, update and delete disposable contacts only",
+      "notes": "Only create, edit and delete contacts whose last name starts with Conduit. Never touch other records, users, roles or settings. The API keeps soft-deleted records readable with deleted: true; a read must treat such a record as absent. The demo does not store the Contact title field, so do not include it.",
+      "rounds": 10,
+      "login": {
+        "click": "^login$",
+        "logged_in_text": "Homepage"
+      },
+      "observer": {
+        "read_url": "https://demo.us.espocrm.com/api/v1/Contact/{id}",
+        "auth": "cookie",
+        "fields": {
+          "firstName": "firstName",
+          "lastName": "lastName",
+          "description": "description"
+        },
+        "ignore": [
+          "name",
+          "modifiedAt",
+          "modifiedById",
+          "modifiedByName",
+          "versionNumber",
+          "streamUpdatedAt"
+        ],
+        "derived_note": "name is recomputed from firstName and lastName; modified* and versionNumber are server-managed",
+        "deleted_flag": "deleted"
+      },
+      "enabled": true
+    },
+    {
+      "id": "snipeit",
+      "url": "https://demo.snipeitapp.com/companies",
+      "task": "Create, read, rename and delete disposable companies only",
+      "notes": "Only create, edit and delete companies whose name starts with Conduit. Never touch assets, users, licenses or settings.",
+      "rounds": 10,
+      "login": {
+        "user": "admin",
+        "pass_env": "LADDER_SNIPEIT_PASS",
+        "url": "https://demo.snipeitapp.com/login",
+        "submit": "^login$",
+        "logged_in_text": "Companies"
+      },
+      "observer": {
+        "read_url": "https://demo.snipeitapp.com/api/v1/companies/{id}",
+        "auth": "bearer",
+        "fields": {
+          "name": "name",
+          "phone": "phone",
+          "email": "email",
+          "notes": "notes"
+        },
+        "ignore": [
+          "updated_at",
+          "available_actions"
+        ],
+        "headers": {
+          "X-Requested-With": "XMLHttpRequest"
+        },
+        "auth_host": "https://demo.snipeitapp.com"
+      },
+      "enabled": true
+    },
+    {
+      "id": "bookstack",
+      "url": "https://demo.bookstackapp.com/books",
+      "task": "Create, read, update and delete disposable books only",
+      "notes": "Only create, edit and delete books whose name starts with Conduit. Never touch other books, shelves, pages, users or settings.",
+      "rounds": 10,
+      "login": {
+        "user": "admin@example.com",
+        "pass_env": "LADDER_BOOKSTACK_PASS",
+        "url": "https://demo.bookstackapp.com/login",
+        "user_label": "Email",
+        "pass_label": "Password",
+        "submit": "^log in$",
+        "logged_in_text": "Books"
+      },
+      "observer": {
+        "read_url": "https://demo.bookstackapp.com/api/books/{id}",
+        "auth": "cookie",
+        "fields": {
+          "name": "name",
+          "description": "description"
+        },
+        "ignore": [
+          "slug",
+          "description_html",
+          "updated_at",
+          "updated_by",
+          "cover",
+          "contents",
+          "tags",
+          "default_template"
+        ],
+        "derived_note": "slug is recomputed from name and description_html from description; updated_* are server-managed"
+      },
+      "enabled": true
+    }
+  ]
+}
