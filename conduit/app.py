@@ -18,11 +18,15 @@ from .agent import model_settings
 from .browser import BrowserSession
 from .compiler import compile_connector
 from .discovery import discover, refresh_forms
+from .gateway import build_gateway, mount_gateway
 from .generator import Store
 from .login import confirm, fingerprint
 from .models import BuildRequest, StrictModel
 from .programs import ProgramError
+from .registry import Registry
 from .runtime import Runtime
+from .session_lock import SessionBusy
+from .tool_results import error_payload, safe_message
 
 STATIC = Path(__file__).with_name("static")
 
@@ -32,15 +36,17 @@ class CallRequest(StrictModel):
     arguments: dict = Field(default_factory=dict)
 
 
-def create_app(home: Path | None = None) -> FastAPI:
+def create_app(home: Path | None = None, *, mcp_json_response: bool = False) -> FastAPI:
     store = Store(home or Path(os.environ.get("CONDUIT_HOME", ".conduit")))
+    registry = Registry(store)
     runtimes, jobs, tasks, job_tasks = {}, {}, set(), {}
     build_slots = asyncio.Semaphore(2)
     compile_jobs = {}
 
     @asynccontextmanager
     async def lifespan(app):
-        yield
+        async with manager.run():
+            yield
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
@@ -49,14 +55,20 @@ def create_app(home: Path | None = None) -> FastAPI:
     app = FastAPI(title="Conduit", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=["localhost", "127.0.0.1", "[::1]", "testserver"])
     app.state.store = store
+    app.state.registry = registry
     app.state.runtimes = runtimes
+    app.state.jobs = jobs
+    app.state.compile_jobs = compile_jobs
 
     @app.middleware("http")
     async def local_requests(request: Request, call_next):
         if request.method not in ("GET", "HEAD", "OPTIONS"):
             origin_header = request.headers.get("origin")
             expected = f"{request.url.scheme}://{request.headers.get('host')}"
-            if (origin_header and origin_header != expected) or request.headers.get("x-conduit-local") != "1":
+            # The MCP endpoint has no dashboard page behind it; the SDK's host and origin checks
+            # guard it instead of the local header. A foreign Origin is still refused here.
+            local = request.headers.get("x-conduit-local") == "1" or request.url.path == "/mcp"
+            if (origin_header and origin_header != expected) or not local:
                 return JSONResponse(
                     {"detail": "This action must originate from the local Conduit dashboard."},
                     status_code=403,
@@ -78,10 +90,23 @@ def create_app(home: Path | None = None) -> FastAPI:
         except (FileNotFoundError, ValueError) as exc:
             raise HTTPException(404, "Connector not found") from exc
 
+    def manifest_mtime(connector_id):
+        try:
+            return (store.directory(connector_id) / "connector.json").stat().st_mtime_ns
+        except (OSError, ValueError):
+            return None
+
     def runtime_for(connector_id):
-        if connector_id not in runtimes:
-            runtimes[connector_id] = Runtime(manifest_or_404(connector_id), store.home)
-        return runtimes[connector_id]
+        runtime = runtimes.get(connector_id)
+        mtime = manifest_mtime(connector_id)
+        # `conduit login` and `conduit compile` rewrite connector.json from another process. A cached
+        # runtime would keep executing the old program; reload it once nothing is running on it.
+        stale = (runtime is not None and getattr(runtime, "manifest_mtime", mtime) != mtime
+                 and not runtime.lock.locked() and (runtime.browser is None or runtime.browser.context is None))
+        if runtime is None or stale:
+            runtime = runtimes[connector_id] = Runtime(manifest_or_404(connector_id), store.home)
+            runtime.manifest_mtime = mtime
+        return runtime
 
     def prune_jobs():
         for old_id in list(jobs):
@@ -90,7 +115,7 @@ def create_app(home: Path | None = None) -> FastAPI:
             if jobs[old_id]["status"] in ("complete", "error", "cancelled"):
                 del jobs[old_id]
 
-    def start_compilation(connector_id):
+    def start_compilation(connector_id, brief=None):
         if connector_id in compile_jobs:
             return {"job_id": compile_jobs[connector_id]}
         if len(tasks) >= 6:
@@ -109,9 +134,12 @@ def create_app(home: Path | None = None) -> FastAPI:
                     jobs[job_id]["status"] = "running"
                     async def progress(message):
                         jobs[job_id]["messages"].append(message)
-                    result = await compile_connector(runtime, progress=progress)
+                    async with asyncio.timeout(45 * 60):
+                        result = await compile_connector(runtime, progress=progress, brief=brief)
                     store.write(runtime.manifest)
+                    runtime.manifest_mtime = manifest_mtime(connector_id)
                     jobs[job_id].update(status="complete", result=result)
+                    await gateway.notify_tools_changed()
             except asyncio.CancelledError:
                 runtime.manifest.compilation.update(status="incomplete", message="Learning stopped; inspect any test objects listed for cleanup.")
                 store.write(runtime.manifest)
@@ -169,7 +197,7 @@ def create_app(home: Path | None = None) -> FastAPI:
     async def connector(connector_id: str, request: Request):
         manifest = manifest_or_404(connector_id)
         return {
-            **manifest.model_dump(),
+            **manifest.model_dump(exclude={"notes"}),
             "client_config": store.config(connector_id),
             "codex_config": store.codex_config(connector_id),
             "universal_config": store.universal_config(str(request.base_url).rstrip("/")),
@@ -187,8 +215,7 @@ def create_app(home: Path | None = None) -> FastAPI:
         manifest_or_404(connector_id)
         return start_compilation(connector_id)
 
-    @app.post("/api/build")
-    async def build(request: BuildRequest):
+    def start_build(request: BuildRequest, brief=None) -> str:
         if len(tasks) >= 6:
             raise HTTPException(429, "Several connectors are being built. Wait for one to finish.")
         job_id = uuid4().hex
@@ -209,7 +236,7 @@ def create_app(home: Path | None = None) -> FastAPI:
                     jobs[job_id].update(status="complete", connector_id=manifest.id)
                     if request.kind == "website" and request.compile:
                         runtimes[manifest.id] = Runtime(manifest, store.home)
-                        jobs[job_id]["compile_job_id"] = start_compilation(manifest.id)["job_id"]
+                        jobs[job_id]["compile_job_id"] = start_compilation(manifest.id, brief=brief)["job_id"]
                 except Exception as exc:
                     detail = (
                         str(exc)
@@ -221,7 +248,14 @@ def create_app(home: Path | None = None) -> FastAPI:
         task = asyncio.create_task(worker())
         tasks.add(task)
         task.add_done_callback(tasks.discard)
-        return {"job_id": job_id}
+        return job_id
+
+    def start_site_build(site: str, name: str | None, brief: str) -> str:
+        return start_build(BuildRequest(target=site, name=name or "", compile=True), brief=brief)
+
+    @app.post("/api/build")
+    async def build(request: BuildRequest):
+        return {"job_id": start_build(request)}
 
     @app.get("/api/jobs/{job_id}")
     async def job(job_id: str):
@@ -235,17 +269,13 @@ def create_app(home: Path | None = None) -> FastAPI:
             return {"result": await runtime_for(connector_id).call(request.tool, request.arguments)}
         except ProgramError as exc:
             store.write(runtime_for(connector_id).manifest)
-            return JSONResponse({"error": str(exc), "code": exc.code, "outcome_unknown": exc.uncertain,
-                                 "mutation_retried": False}, status_code=400)
+            return JSONResponse({**error_payload(exc), "error": str(exc)}, status_code=400)
         except HTTPException:
             raise
+        except SessionBusy as exc:
+            return JSONResponse({**error_payload(exc), "error": str(exc)}, status_code=400)
         except Exception as exc:
-            detail = (
-                str(exc)
-                if isinstance(exc, (ValueError, RuntimeError))
-                else type(exc).__name__ + ": action failed; inspect the interface and retry"
-            )
-            return JSONResponse({"error": detail[:1500]}, status_code=400)
+            return JSONResponse({"error": safe_message(exc)}, status_code=400)
 
     @app.post("/api/connectors/{connector_id}/run")
     async def run_task_job(connector_id: str, request: CallRequest):
@@ -288,10 +318,7 @@ def create_app(home: Path | None = None) -> FastAPI:
         task.add_done_callback(lambda _: job_tasks.pop(job_id, None))
         return {"job_id": job_id}
 
-    @app.post("/api/jobs/{job_id}/cancel")
-    async def cancel_job(job_id: str):
-        if job_id not in jobs:
-            raise HTTPException(404, "Job not found")
+    def request_cancel(job_id: str) -> bool:
         task = job_tasks.get(job_id)
         if task:
             # A task cancelled before its first await never enters the worker's handler.
@@ -299,7 +326,14 @@ def create_app(home: Path | None = None) -> FastAPI:
                 status="cancelled", error="Stopped. Any changes already made remain in the app."
             )
             task.cancel()
-        return {"message": "Stop requested" if task else "This task has already finished"}
+        return bool(task)
+
+    @app.post("/api/jobs/{job_id}/cancel")
+    async def cancel_job(job_id: str):
+        if job_id not in jobs:
+            raise HTTPException(404, "Job not found")
+        stopped = request_cancel(job_id)
+        return {"message": "Stop requested" if stopped else "This task has already finished"}
 
     @app.post("/api/connectors/{connector_id}/login/{action}")
     async def login(connector_id: str, action: str):
@@ -388,4 +422,10 @@ def create_app(home: Path | None = None) -> FastAPI:
         )
 
     app.mount("/static", StaticFiles(directory=STATIC), name="static")
+    gateway = build_gateway(registry=registry, runtime_for=runtime_for, compile_jobs=compile_jobs, jobs=jobs,
+                            start_build=start_site_build, start_compilation=start_compilation,
+                            cancel_job=request_cancel, persist=store.write,
+                            model_available=lambda: bool(model_settings().get("available")))
+    manager = mount_gateway(app, gateway, json_response=mcp_json_response)
+    app.state.gateway = gateway
     return app

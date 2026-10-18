@@ -374,7 +374,7 @@ def migrate_discovery_notes(manifest):
 
 
 async def compile_connector(runtime, *, progress=None, model=None, max_rounds=8, research=True, resource=None,
-                            program_format="auto"):
+                            program_format="auto", brief=None):
     if program_format not in ("auto", "javascript", "steps"):
         raise ValueError("Unknown program format")
     if not runtime.browser:
@@ -479,7 +479,8 @@ async def compile_connector(runtime, *, progress=None, model=None, max_rounds=8,
                 evidence["sources"] = collector.sources
                 evidence["openapi_operations"] = [t.model_dump() for t in manifest.tools if t.adapter == "http"][:35]
                 evidence["requested_tasks"] = [t.config.get("goal") for t in manifest.tools if t.adapter == "agent"]
-                evidence["user_notes"] = manifest.notes
+                # A gateway build hands its request in as `brief` so nothing is written to the manifest.
+                evidence["user_notes"] = brief if brief is not None else manifest.notes
                 evidence["coverage"] = [{key: c.get(key) for key in ("resource", "label", "status", "operations", "error")}
                                         for c in manifest.capabilities]
                 evidence["restore_only"] = bool(pending_probe)

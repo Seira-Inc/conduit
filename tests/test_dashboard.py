@@ -22,6 +22,7 @@ def test_dashboard_origin_protection_and_export(tmp_path):
         target="https://example.com",
         allowed_origins=["https://example.com"],
         tools=browser_tools(),
+        notes="SECRET-NOTE: create the contact John Doe",
     )
     directory = app.state.store.write(manifest)
     (directory / ".env").write_text("SECRET=not-for-export")
@@ -53,6 +54,24 @@ def test_dashboard_origin_protection_and_export(tmp_path):
             assert not any(".env" in name or ".state" in name for name in archive.namelist())
             assert all(b"not-for-export" not in archive.read(name) for name in archive.namelist())
         assert client.get("/api/connectors/does-not-exist").status_code == 404
+        detail = client.get("/api/connectors/demo")
+        assert detail.status_code == 200 and "notes" not in detail.json()
+        assert "SECRET-NOTE" not in detail.text and "SECRET-NOTE" not in client.get("/api/connectors").text
+
+
+def test_mcp_route_is_reachable_without_the_dashboard_header(tmp_path):
+    app = create_app(tmp_path, mcp_json_response=True)
+    initialize = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+        "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "test", "version": "0"}}}
+    headers = {"accept": "application/json, text/event-stream", "content-type": "application/json"}
+    with TestClient(app) as client:
+        assert client.post("/api/build", json={"target": "https://example.com"}).status_code == 403
+        ok = client.post("/mcp", json=initialize, headers=headers)
+        assert ok.status_code == 200 and ok.headers.get("mcp-session-id")
+        assert ok.json()["result"]["capabilities"]["tools"]["listChanged"] is True
+        foreign = client.post("/mcp", json=initialize, headers={**headers, "origin": "https://evil.example"})
+        assert foreign.status_code == 403
+        assert client.post("/mcp", json=initialize, headers={**headers, "host": "evil.example"}).status_code == 400
 
 
 def test_task_can_be_stopped_without_claiming_success(tmp_path, monkeypatch):

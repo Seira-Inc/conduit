@@ -28,6 +28,16 @@ python -m conduit --help
 
 Commands: `login`, `create`, `compile`, `verify`, `repair`, `optimize`, `hub`, `serve`, `list`, `ui`.
 
+## The front door (local)
+
+`python -m conduit ui` serves the dashboard and an MCP endpoint at `http://127.0.0.1:4455/mcp`. Add it to Claude Code:
+
+```bash
+claude mcp add --transport http seira http://127.0.0.1:4455/mcp
+```
+
+It lists every verified tool across your connectors, plus `seira_find` (is there a tool for this?), `seira_build` (build one just in time; returns a job id, the build takes minutes) and `seira_status` (how is that job doing?). The endpoint accepts requests with no `Origin` header or a localhost one, so browser-based MCP clients are refused by design. Claude Desktop keeps using `python -m conduit hub` over stdio until the gateway is reachable from the internet.
+
 ## Tests
 
 ```bash

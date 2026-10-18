@@ -93,6 +93,8 @@ def main():
             from .app import create_app
 
             print(f"Conduit is at http://127.0.0.1:{args.port}", file=sys.stderr)
+            print(f"MCP front door: claude mcp add --transport http seira http://127.0.0.1:{args.port}/mcp",
+                  file=sys.stderr)
             uvicorn.run(create_app(args.home), host="127.0.0.1", port=args.port, log_level="warning")
         elif args.command == "serve":
             from .mcp_server import run

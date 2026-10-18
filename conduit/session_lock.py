@@ -4,6 +4,10 @@ import os
 from pathlib import Path
 
 
+class SessionBusy(ValueError):
+    """Another process holds this connector's browser."""
+
+
 class SessionLock:
     def __init__(self, path: Path):
         self.path = path
@@ -27,7 +31,7 @@ class SessionLock:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError as exc:
             handle.close()
-            raise ValueError(
+            raise SessionBusy(
                 "This connector is open in another client. Use Release preview in Conduit, browser_close in that MCP client, or close that client first."
             ) from exc
         self.file = handle

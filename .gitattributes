@@ -1,0 +1,5 @@
+# One line ending across Windows and WSL checkouts; a CRLF shebang breaks a shell launcher.
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.ico binary

@@ -33,6 +33,49 @@ Iminabo"). Iminabo amended and extended them on 2026-10-18, in `docs/SYSTEM_DESI
 6. **Tier 0 runs local-only first.** No tunnel, no VPS: gateway and runtime on one machine until
    the loop works end to end. Customer zero is Iminabo until the others are free.
 
+## 2026-10-18 — the Tier 0 front door
+
+**What exists now.** `conduit ui` also serves one Streamable HTTP MCP endpoint at
+`http://127.0.0.1:4455/mcp` (`conduit/gateway.py`, mounted in `app.py`). It lists every verified
+program tool across connectors from an in-memory index refreshed by `connector.json` mtime
+(`conduit/registry.py`), runs them in process through the dashboard's runtime map, and adds three
+meta tools: `seira_find(request, site?)` (deterministic: the site is a hard filter, the verb comes
+from keyword sets, the resource from token overlap), `seira_build(site, request, name?)` (answers
+`exists`, `login_required` with the exact next command, or `queued` with an ETA from the median of
+recorded build times) and `seira_status(job_id, cancel?)`. A finished build broadcasts
+`tools/list_changed`. Tool names keep the hub's rule, `sha256(connector_id)[:8] + "__" + tool`;
+the connector name and host go in the description. Client setup:
+`claude mcp add --transport http seira http://127.0.0.1:4455/mcp`. Claude Desktop keeps
+`conduit hub` over stdio until a tunnel exists.
+
+**Closed on the way.** The `notes` leak (three serve paths; a gateway build passes its request to
+the compiler as `brief` instead of writing it to the manifest); the `/call` route dropping the
+fields `verify_export` reads (one result shape in `conduit/tool_results.py` for the per-connector
+server, `/call` and the gateway); a cached runtime surviving a CLI compile (`runtime_for` reloads
+on mtime change). The endpoint is bound to 127.0.0.1 with the SDK's DNS-rebinding protection
+(localhost hosts and origins), accepts a request with no `Origin` because Claude Code sends none,
+and keeps the 200 kB body cap.
+
+**Tests.** 176 passed, 1 skipped (was 146): `test_tool_results.py`, `test_registry.py`,
+`test_gateway.py` (in-memory client session) and `test_gateway_http.py` (a real uvicorn socket,
+`streamable_http_client`, `list_changed` received). Ruff clean.
+
+**Manual run, over the research home** (the HubSpot and Forms connectors with their DPAPI
+sessions). `claude mcp get seira` reports connected. The gateway lists 17 tools with the right
+annotations (reads `readOnlyHint`; update and delete `destructiveHint`).
+`seira_find("read a contact in hubspot")` picks `7c8ede37__hubspot_contacts_read`;
+`seira_build(site="https://app.hubspot.com", "delete a contact")` answers `exists` with the delete
+tool, once site matching learned to fall back to the domain label (`app.hubspot.com` against the
+connector's `app-na2.hubspot.com`). The real read ran in 17.5 to 19.7 s on a cold browser and
+exposed a connector defect: for an id that does not exist, the receipt carries null fields that
+break the tool's own output schema, and the SDK client discards such a result outright. The
+gateway now returns it as an error, `receipt_schema_mismatch`, with the receipt attached; the
+connector fix is logged in `problems_encountered.md`.
+
+**Not done.** The progress heartbeat (cut; measure the client's timeout on the first long UI-driven
+run first); the tunnel and OAuth (Tier 0 proper); the four session bugs (§1.9); `seira_build` on a
+fresh site end to end, which needs a configured model (this repo's `.env` has none yet).
+
 ## 2026-10-18 — the production repo is seeded and the design is written
 
 **The repo.** `Seira-Inc/conduit` on GitHub, private, branch `imi`; `main` holds only the initial

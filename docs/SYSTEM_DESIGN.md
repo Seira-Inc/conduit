@@ -346,14 +346,14 @@ The client talks only to the gateway; the gateway talks to the user's agent over
 
 **TL;DR**
 
-- Most of the loop exists: build, verify, run, confirm. What is missing is everything around it: the front door, the registry, sessions off one PC, approval, update scheduling, roles, hosting.
-- `problems_encountered.md` has 17 open items; the four session bugs and the `notes` leak block every tier.
+- Most of the loop exists: build, verify, run, confirm, and since Oct 18 a local front door and registry (`gateway.py`, `registry.py`). What is missing is everything around it: sessions off one PC, approval, update scheduling, roles, hosting.
+- `problems_encountered.md` has 17 open items; the four session bugs block every tier. The `notes` leak is closed (Oct 18).
 - The burned API key still sitting in the shared Drive doc must be rotated before anything is hosted.
 
 | Step | Exists today (file) | Open problems touching it | To write |
 | --- | --- | --- | --- |
-| 1 Tag | stdio servers `mcp_server.py`, `hub.py`; client configs `generator.py` | the front door does not exist | Streamable HTTP gateway; OAuth and JWT check |
-| 2 Find | `generator.py` `Store`; `hub.py` verified-only listing | every connector carries a full package copy under `_runtime` | registry table; `seira_find`; the meta tools |
+| 1 Tag | stdio servers `mcp_server.py`, `hub.py`; client configs `generator.py`; Streamable HTTP gateway `gateway.py` at `/mcp` inside `conduit ui`, local-only (Oct 18) | no auth on the endpoint: 127.0.0.1 only, Host and Origin checks; progress heartbeat not implemented | tunnel; OAuth and JWT check |
+| 2 Find | `generator.py` `Store`; `hub.py` verified-only listing; `registry.py` in-memory index refreshed by `connector.json` mtime; `seira_find`, `seira_build`, `seira_status` in `gateway.py` (Oct 18) | every connector carries a full package copy under `_runtime`; no SQLite until Keep and the cloud tiers | model-backed re-ranker behind `seira_find`; registry table with company scope |
 | 3 Build | `discovery.py`, `recorder.py`, `evidence.py`, `compiler.py`, `record_probe.py`, `programs.py`, `grounding.py`, `single_operation.py` | compiler prompt unversioned and untested; truncated model output gets closing braces added silently; form parser drops checkbox, radio, file and password forms; single-operation hardcodes `update`; unassisted canvas discovery never completed | async job with ETA; verb generalization; altitude taken from the request |
 | 4 Verify | `verifier.py`, `mcp_check.py`, the observer hook, `euphrates/tester.py` | no independent observer for Snipe-IT or Forms; the cleanup matcher deleted a sample contact | test-safe flag per site; measured `model_calls`; codebase engine deferred to v2 |
 | 5 Ask | annotations `mcp_server.py:48-53`; `state_guard.py`; read-before-write in `verifier.py` | none | elicitation for delete and irreversible actions; standing-approval scope |
