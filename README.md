@@ -2,6 +2,8 @@
 
 Seira's just-in-time tool engine. Point it at a website you are signed in to; it learns the site, builds tools that create, read, update and delete records there, proves them against the live site, and serves them over MCP with no model calls at run time.
 
+![The just-in-time loop](docs/design/jit-loop.png)
+
 ## Read first
 
 - `journal.md`: what happened and what was decided, newest first. `problems_encountered.md`: open and resolved problems, newest first. Both append-only.

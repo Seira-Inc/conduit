@@ -78,8 +78,9 @@ full account of each is in `docs/research/problems_encountered.md`.
   1 skipped. The `requirements.lock` still comes from the research repo and has not been
   regenerated here.
 
-- **[note] The design doc's drawings do not survive export.** `docs/SYSTEM_DESIGN.md` carries text
-  versions of the loop and the Tier 0 layout; the drawn versions live only in the Claude Doc.
+- **[resolved] The design doc's drawings did not survive export.** `docs/SYSTEM_DESIGN.md` carries text
+  versions of the loop and the Tier 0 layout, and the drawn versions are now in the repo as
+  `docs/design/jit-loop.png` and `docs/design/tier0.png`, rendered from the Claude Doc.
 
 ## Carried over from research (still open)
 

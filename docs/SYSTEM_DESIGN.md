@@ -1,4 +1,4 @@
-<!-- Exported from the live Claude Doc on 2026-10-18: https://claude.ai/code/artifact/01408046-4299-49c9-a3e1-18c00fba0908 . The live doc holds the two drawings and the comment threads; edit there, re-export here. -->
+<!-- Exported from the live Claude Doc on 2026-10-18: https://claude.ai/code/artifact/01408046-4299-49c9-a3e1-18c00fba0908 . The two drawings are exported as PNG under docs/design/; the comment threads live only in the doc. Edit there, re-export here. -->
 
 # Seira System Design
 
@@ -33,6 +33,8 @@ Every section opens with a TL;DR of about five lines, then a long version for wh
 
 Every request takes the same path, and the only slow branch is the one where no tool exists yet.
 
+![A found tool runs with no AI; a missing one is built and verified first](design/jit-loop.png)
+
 ```
 Tag @seira -> Find a tool -> Exists? --yes--> Ask the user -> Run it (no AI) -> Confirm result -> Keep for all
                                 |                 ^                                                   |
@@ -40,7 +42,6 @@ Tag @seira -> Find a tool -> Exists? --yes--> Ask the user -> Run it (no AI) -> 
                                 v                 |                                                   |
                              Build it ------> Verify it                          (next time: back to Find)
 ```
-*Drawn version in the live doc.*
 
 Find runs every time. Only when nothing exists does the request go through Build and Verify, and even then it passes Ask before anything runs. Keep feeds the next Find, so the second request on the same site skips the slow branch. Steps 9 (Login) and 10 (Company, roles) sit under the loop and are described after it.
 
@@ -253,6 +254,8 @@ When shortest is chosen, build it as a single operation and record which atomics
 - Sign-in to Seira: OAuth through a free identity-provider tier (WorkOS AuthKit or Auth0). Fallback: per-user bearer keys, Claude only. Roles: a JSON file of users, admins and blocks. Audit: an append-only log on the gateway.
 - Cut: cloud sessions, Browserbase, per-call sandbox, an audit database; the codebase engine can join later. Customer zero is the team, then one partner whose users can run the agent. About two weeks of hackathon-grade work. Risk: a user on a locked-down laptop cannot install the agent.
 
+![Tier 0: the engine and the session stay on the user's PC](design/tier0.png)
+
 ```
 [AI client: ChatGPT or Claude]
         |  MCP over HTTPS, OAuth sign-in
@@ -265,7 +268,6 @@ When shortest is chosen, build it as a single operation and record which atomics
                                                                                        v
                                                                              [The site, from the user's own IP]
 ```
-*Drawn version in the live doc.*
 
 The client talks only to the gateway; the gateway talks to the user's agent over a connection the agent opened; the site only ever sees the user's own browser and IP.
 
