@@ -4,6 +4,7 @@ import os
 import time
 
 import pytest
+from mcp import types
 from mcp.shared.memory import create_connected_server_and_client_session
 from test_compiler import family_for
 from test_registry import READY, verified_connector
@@ -17,11 +18,14 @@ from conduit.registry import public_name
 from conduit.tool_results import error_payload
 
 READ = public_name("demo-1", "records_read")
+DELETE = public_name("demo-1", "records_delete")
 
 
 def receipt(name, arguments):
-    return {"status": "verified", "operation": name.rsplit("_", 1)[-1], "id": arguments.get("id", "r1"),
-            "data": {"title": "Kept"}, "deleted": False, "reconciled": True, "adapter_version": "1",
+    verb = name.rsplit("_", 1)[-1]
+    return {"status": "verified", "operation": verb, "id": arguments.get("id", "r1"),
+            "data": None if verb == "delete" else {"title": "Kept"}, "deleted": verb == "delete",
+            "reconciled": True, "adapter_version": "1",
             "state_token": None,
             "metrics": {"requests": 1, "steps": 1, "model_calls": 0, "screenshots": 0, "duration_ms": 1.5}}
 
@@ -172,6 +176,60 @@ async def test_runtime_reloads_when_connector_json_changes(app, monkeypatch):
         second = (await session.call_tool(READ, {"id": "r1"})).structuredContent["data"]["tools"]
     assert "records_delete" in first and "records_delete" not in second
     assert app.state.runtimes["demo-1"] is not before
+
+
+def answering(confirm):
+    async def callback(context, params):
+        assert params.mode == "form" and "cannot be undone" in params.message
+        return types.ElicitResult(action="accept" if confirm is not None else "decline",
+                                  content={"confirm": confirm} if confirm is not None else None)
+    return callback
+
+
+async def test_delete_asks_the_user_through_elicitation_and_logs_the_answer(app, monkeypatch):
+    calls = []
+
+    async def fake_call(self, name, arguments, progress=None):
+        calls.append((name, arguments))
+        return receipt(name, arguments)
+
+    monkeypatch.setattr("conduit.runtime.Runtime.call", fake_call)
+    async with create_connected_server_and_client_session(app.state.gateway,
+                                                           elicitation_callback=answering(True)) as session:
+        done = await session.call_tool(DELETE, {"id": "r1"})
+    async with create_connected_server_and_client_session(app.state.gateway,
+                                                           elicitation_callback=answering(None)) as session:
+        declined = await session.call_tool(DELETE, {"id": "r2"})
+    assert not done.isError and calls == [("records_delete", {"id": "r1"})]
+    assert declined.isError and json.loads(declined.content[0].text)["code"] == "not_confirmed"
+    rows = app.state.audit.tail()
+    assert [(r["verb"], r["approval"], r["outcome"]) for r in rows] == [
+        ("delete", "elicitation", "ok"), ("delete", "elicitation", "not_confirmed")]
+    assert "r1" not in json.dumps(rows) and rows[0]["user"] == "local"
+
+
+async def test_delete_without_elicitation_needs_a_one_use_confirm_token(app, monkeypatch):
+    calls = []
+
+    async def fake_call(self, name, arguments, progress=None):
+        calls.append(arguments)
+        return receipt(name, arguments)
+
+    monkeypatch.setattr("conduit.runtime.Runtime.call", fake_call)
+    async with create_connected_server_and_client_session(app.state.gateway) as session:
+        listed = {t.name: t for t in (await session.list_tools()).tools}
+        first = json.loads((await session.call_tool(DELETE, {"id": "r1"})).content[0].text)
+        assert first["code"] == "confirmation_required" and first["preview"]["arguments"] == {"id": "r1"}
+        wrong = json.loads((await session.call_tool(DELETE, {"id": "r9", "confirm_token": first["confirm_token"]}))
+                           .content[0].text)
+        done = await session.call_tool(DELETE, {"id": "r1", "confirm_token": first["confirm_token"]})
+        reused = json.loads((await session.call_tool(DELETE, {"id": "r1", "confirm_token": first["confirm_token"]}))
+                            .content[0].text)
+    assert "confirm_token" in listed[DELETE].inputSchema["properties"]
+    assert "confirm_token" not in listed[READ].inputSchema["properties"]
+    assert wrong["code"] == "confirmation_expired" and reused["code"] == "confirmation_expired"
+    assert not done.isError and calls == [{"id": "r1"}]
+    assert app.state.audit.tail()[-1]["approval"] == "confirm_token"
 
 
 async def test_seira_build_needs_a_model(app, monkeypatch):

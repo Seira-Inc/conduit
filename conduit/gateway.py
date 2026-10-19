@@ -4,6 +4,8 @@ sharing the dashboard's runtime map and job workers. Nothing here calls a model.
 from __future__ import annotations
 
 import json
+import secrets
+import time
 import weakref
 
 from mcp import types
@@ -11,9 +13,16 @@ from mcp.server import NotificationOptions, Server
 from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 from mcp.server.transport_security import TransportSecuritySettings
 
+from .audit import Audit, argument_hash
 from .programs import ProgramError
 from .registry import Registry, _host_of
 from .tool_results import error_result, success_result
+
+CONFIRM_TOKEN = {"type": "string", "description": "Returned by a first call that asked for confirmation; "
+                                                  "pass it back once the user has agreed to the preview."}
+CONFIRM_FORM = {"type": "object", "properties": {"confirm": {
+    "type": "boolean", "title": "Delete it", "description": "Yes deletes the record; No leaves it untouched."}},
+    "required": ["confirm"]}
 
 INSTRUCTIONS = (
     "Seira serves verified tools for the websites this machine is signed in to. Each tool was proved "
@@ -89,6 +98,12 @@ def as_local_error(exc: BaseException) -> BaseException:
     return RuntimeError(str(detail)) if detail else exc
 
 
+def refusal(code: str, message: str, **extra) -> types.CallToolResult:
+    payload = {"status": "error", "code": code, "message": message, "outcome_unknown": False,
+               "mutation_retried": False, **extra}
+    return types.CallToolResult(content=[types.TextContent(type="text", text=json.dumps(payload))], isError=True)
+
+
 def login_hint(connector_id: str) -> str:
     return (f"Sign in on this machine: run `python -m conduit login {connector_id}` (a browser window opens; "
             f"sign in there), then `python -m conduit compile {connector_id}`, or use Login at "
@@ -97,9 +112,51 @@ def login_hint(connector_id: str) -> str:
 
 def build_gateway(*, registry: Registry, runtime_for, compile_jobs: dict, jobs: dict,
                   start_build=None, start_compilation=None, persist=None, cancel_job=None,
-                  model_available=lambda: True) -> GatewayServer:
+                  model_available=lambda: True, audit: Audit | None = None) -> GatewayServer:
     server = GatewayServer("seira", version="0.2.0", instructions=INSTRUCTIONS)
     sessions = weakref.WeakSet()
+    confirmations: dict[str, tuple[str, str, float]] = {}
+
+    def record(**fields):
+        if audit is not None:
+            audit.record(user="local", **fields)
+
+    def supports_elicitation() -> bool:
+        try:
+            session = server.request_context.session
+        except LookupError:
+            return False
+        return session.check_client_capability(types.ClientCapabilities(elicitation=types.ElicitationCapability()))
+
+    async def confirmed(entry, name: str, arguments: dict) -> tuple[str | None, types.CallToolResult | None]:
+        """(how the delete was approved, None) or (None, the result to return instead of running it)."""
+        token = arguments.pop("confirm_token", None)
+        digest = argument_hash(arguments)
+        what = f"{entry.label or entry.resource} {arguments.get('id', '')}".strip() + f" on {_host_of(entry.site)}"
+        if token:
+            pending = confirmations.get(token)
+            if pending is None or pending[:2] != (name, digest) or pending[2] < time.time():
+                return None, refusal("confirmation_expired", "That confirmation does not match this call or has "
+                                     "expired; call again without confirm_token to get a new one.")
+            del confirmations[token]
+            return "confirm_token", None
+        if supports_elicitation():
+            answer = await server.request_context.session.elicit(
+                message=f"Delete {what}? This cannot be undone.", requestedSchema=CONFIRM_FORM)
+            if answer.action == "accept" and (answer.content or {}).get("confirm") is True:
+                return "elicitation", None
+            record(tool=name, connector_id=entry.connector_id, verb=entry.verb, arguments=digest,
+                   approval="elicitation", outcome="not_confirmed")
+            return None, refusal("not_confirmed", "The user did not confirm the delete; nothing was changed.")
+        for stale in [t for t, (_, _, expires) in confirmations.items() if expires < time.time()]:
+            del confirmations[stale]
+        token = secrets.token_urlsafe(12)
+        confirmations[token] = (name, digest, time.time() + 600)
+        return None, refusal(
+            "confirmation_required",
+            f"Show the user exactly what will be deleted ({what}); if they agree, call this tool again with "
+            "the same arguments plus confirm_token. The token is good for ten minutes and one call.",
+            confirm_token=token, preview={"tool": name, "arguments": arguments})
 
     def remember_session():
         try:
@@ -123,8 +180,11 @@ def build_gateway(*, registry: Registry, runtime_for, compile_jobs: dict, jobs: 
         tools = [
             types.Tool(
                 name=e.name,
-                description=f"{e.connector_name} ({_host_of(e.site)}): {e.description}",
-                inputSchema=e.input_schema,
+                description=f"{e.connector_name} ({_host_of(e.site)}): {e.description}"
+                            + (" Irreversible: the user is asked to confirm first." if e.verb == "delete" else ""),
+                inputSchema={**e.input_schema, "properties": {**e.input_schema.get("properties", {}),
+                                                              "confirm_token": CONFIRM_TOKEN}}
+                if e.verb == "delete" else e.input_schema,
                 outputSchema=e.output_schema,
                 annotations=types.ToolAnnotations(
                     readOnlyHint=e.read_only,
@@ -224,14 +284,24 @@ def build_gateway(*, registry: Registry, runtime_for, compile_jobs: dict, jobs: 
                        "job_id": compile_jobs[entry.connector_id],
                        "message": "This connector is being built or repaired; call seira_status with the job id."}
             return types.CallToolResult(content=[types.TextContent(type="text", text=json.dumps(payload))], isError=True)
-        runtime = None
+        approval = "client"
+        if entry.verb == "delete":
+            approval, early = await confirmed(entry, name, arguments)
+            if early is not None:
+                return early
+        runtime, started = None, time.perf_counter()
         try:
             runtime = runtime_for(entry.connector_id)
             result = await runtime.call(entry.tool, arguments)
         except Exception as exc:
             if isinstance(exc, ProgramError) and persist and runtime is not None:
                 persist(runtime.manifest)
+            record(tool=name, connector_id=entry.connector_id, verb=entry.verb, arguments=argument_hash(arguments),
+                   approval=approval, outcome=getattr(exc, "code", type(exc).__name__),
+                   duration_ms=round((time.perf_counter() - started) * 1000))
             return error_result(exc)
+        record(tool=name, connector_id=entry.connector_id, verb=entry.verb, arguments=argument_hash(arguments),
+               approval=approval, outcome="ok", duration_ms=round((time.perf_counter() - started) * 1000))
         return success_result(result, entry.output_schema)
 
     @server.list_resources()

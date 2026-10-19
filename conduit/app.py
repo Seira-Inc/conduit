@@ -15,6 +15,7 @@ from pydantic import Field
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .agent import model_settings
+from .audit import Audit
 from .browser import BrowserSession
 from .compiler import compile_connector
 from .discovery import discover, refresh_forms
@@ -39,6 +40,7 @@ class CallRequest(StrictModel):
 def create_app(home: Path | None = None, *, mcp_json_response: bool = False) -> FastAPI:
     store = Store(home or Path(os.environ.get("CONDUIT_HOME", ".conduit")))
     registry = Registry(store)
+    audit = Audit(store.home / "audit.jsonl")
     runtimes, jobs, tasks, job_tasks = {}, {}, set(), {}
     build_slots = asyncio.Semaphore(2)
     compile_jobs = {}
@@ -56,6 +58,7 @@ def create_app(home: Path | None = None, *, mcp_json_response: bool = False) -> 
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=["localhost", "127.0.0.1", "[::1]", "testserver"])
     app.state.store = store
     app.state.registry = registry
+    app.state.audit = audit
     app.state.runtimes = runtimes
     app.state.jobs = jobs
     app.state.compile_jobs = compile_jobs
@@ -424,7 +427,7 @@ def create_app(home: Path | None = None, *, mcp_json_response: bool = False) -> 
     app.mount("/static", StaticFiles(directory=STATIC), name="static")
     gateway = build_gateway(registry=registry, runtime_for=runtime_for, compile_jobs=compile_jobs, jobs=jobs,
                             start_build=start_site_build, start_compilation=start_compilation,
-                            cancel_job=request_cancel, persist=store.write,
+                            cancel_job=request_cancel, persist=store.write, audit=audit,
                             model_available=lambda: bool(model_settings().get("available")))
     manager = mount_gateway(app, gateway, json_response=mcp_json_response)
     app.state.gateway = gateway
