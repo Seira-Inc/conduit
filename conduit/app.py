@@ -17,10 +17,11 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from .agent import model_settings
 from .audit import Audit
 from .browser import BrowserSession
-from .compiler import compile_connector
+from .compiler import compile_connector, repair_connector
 from .discovery import discover, refresh_forms
 from .gateway import build_gateway, mount_gateway
 from .generator import Store
+from .keep import daily_check, seconds_until
 from .login import confirm, fingerprint
 from .models import BuildRequest, StrictModel
 from .programs import ProgramError
@@ -47,6 +48,11 @@ def create_app(home: Path | None = None, *, mcp_json_response: bool = False) -> 
 
     @asynccontextmanager
     async def lifespan(app):
+        clock = os.environ.get("CONDUIT_DAILY_CHECK", "07:00")
+        if clock != "off":
+            task = asyncio.create_task(daily_loop(clock))
+            tasks.add(task)
+            task.add_done_callback(tasks.discard)
         async with manager.run():
             yield
         for task in tasks:
@@ -118,7 +124,8 @@ def create_app(home: Path | None = None, *, mcp_json_response: bool = False) -> 
             if jobs[old_id]["status"] in ("complete", "error", "cancelled"):
                 del jobs[old_id]
 
-    def start_compilation(connector_id, brief=None):
+    def start_compilation(connector_id, brief=None, *, resource=None):
+        """Learn the whole site, or with `resource` repair one family through the same gates."""
         if connector_id in compile_jobs:
             return {"job_id": compile_jobs[connector_id]}
         if len(tasks) >= 6:
@@ -128,8 +135,9 @@ def create_app(home: Path | None = None, *, mcp_json_response: bool = False) -> 
             raise HTTPException(400, "CRUD compilation currently targets websites")
         job_id = uuid4().hex
         prune_jobs()
-        jobs[job_id] = {"id": job_id, "status": "queued", "messages": ["Preparing CRUD learning and tests"],
-                        "connector_id": connector_id, "kind": "compile"}
+        jobs[job_id] = {"id": job_id, "status": "queued", "connector_id": connector_id,
+                        "kind": "repair" if resource else "compile", "resource": resource,
+                        "messages": [f"Repairing {resource}" if resource else "Preparing CRUD learning and tests"]}
         compile_jobs[connector_id] = job_id
         async def worker():
             try:
@@ -138,7 +146,10 @@ def create_app(home: Path | None = None, *, mcp_json_response: bool = False) -> 
                     async def progress(message):
                         jobs[job_id]["messages"].append(message)
                     async with asyncio.timeout(45 * 60):
-                        result = await compile_connector(runtime, progress=progress, brief=brief)
+                        if resource:
+                            result = await repair_connector(runtime, resource, progress=progress, brief=brief)
+                        else:
+                            result = await compile_connector(runtime, progress=progress, brief=brief)
                     store.write(runtime.manifest)
                     runtime.manifest_mtime = manifest_mtime(connector_id)
                     jobs[job_id].update(status="complete", result=result)
@@ -158,6 +169,28 @@ def create_app(home: Path | None = None, *, mcp_json_response: bool = False) -> 
         task.add_done_callback(tasks.discard)
         task.add_done_callback(lambda _: job_tasks.pop(job_id, None))
         return {"job_id": job_id}
+
+    def start_repair(connector_id, resource) -> str:
+        return start_compilation(connector_id, resource=resource)["job_id"]
+
+    async def run_daily_check():
+        return await daily_check(store.list(), runtime_for, busy=lambda cid: cid in compile_jobs, write=store.write,
+                                 has_session=lambda cid: (store.home / "auth" / (cid + ".session")).exists(),
+                                 audit=audit)
+
+    async def daily_loop(clock):
+        while True:
+            await asyncio.sleep(seconds_until(clock))
+            try:
+                await run_daily_check()
+            except Exception:
+                pass
+
+    app.state.run_daily_check = run_daily_check
+
+    @app.post("/api/check")
+    async def check_now():
+        return {"sites": await run_daily_check()}
 
     @app.get("/")
     async def index():
@@ -427,7 +460,7 @@ def create_app(home: Path | None = None, *, mcp_json_response: bool = False) -> 
     app.mount("/static", StaticFiles(directory=STATIC), name="static")
     gateway = build_gateway(registry=registry, runtime_for=runtime_for, compile_jobs=compile_jobs, jobs=jobs,
                             start_build=start_site_build, start_compilation=start_compilation,
-                            cancel_job=request_cancel, persist=store.write, audit=audit,
+                            cancel_job=request_cancel, persist=store.write, audit=audit, start_repair=start_repair,
                             model_available=lambda: bool(model_settings().get("available")))
     manager = mount_gateway(app, gateway, json_response=mcp_json_response)
     app.state.gateway = gateway

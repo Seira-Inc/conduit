@@ -12,6 +12,20 @@ STATIC = Path(__file__).parents[1] / "conduit" / "static"
 
 
 @pytest.fixture
+def app(tmp_path):
+    """A dashboard app over a temporary home holding one verified connector, demo-1 on example.com."""
+    from test_registry import verified_connector
+
+    from conduit.app import create_app
+
+    app = create_app(tmp_path, mcp_json_response=True)
+    manifest = verified_connector(app.state.store, "demo-1", "Demo", "https://example.com", "records")
+    manifest.notes = "SECRET-NOTE: create the contact John Doe"
+    app.state.store.write(manifest)
+    return app
+
+
+@pytest.fixture
 def local_site():
     state = {"items": {}, "next_id": 1, "writes": 0}
 

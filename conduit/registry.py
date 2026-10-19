@@ -58,6 +58,7 @@ class Entry:
     label: str
     read_only: bool
     description: str
+    status: str
     input_schema: dict
     output_schema: dict | None
     has_session: bool = False
@@ -98,6 +99,10 @@ class Registry:
     def _session_path(self, connector_id: str) -> Path:
         return self.store.home / "auth" / (connector_id + ".session")
 
+    def invalidate(self, connector_id: str) -> None:
+        """Re-read this connector on the next refresh even if its file's mtime did not move."""
+        self._mtimes.pop(connector_id, None)
+
     def _drop(self, connector_id: str) -> None:
         self._mtimes.pop(connector_id, None)
         self._manifests.pop(connector_id, None)
@@ -114,8 +119,10 @@ class Registry:
         except ValueError:
             return
         labels = {c.get("resource"): c.get("label") for c in manifest.capabilities if c.get("resource")}
+        statuses = {c.get("resource"): c.get("status") for c in manifest.capabilities if c.get("resource")}
         for tool in manifest.tools:
-            if not verified_program(tool):
+            # A degraded resource stays out of the catalog until its repair republishes it.
+            if not verified_program(tool) or statuses.get(tool.resource) == "degraded":
                 continue
             label = labels.get(tool.resource) or tool.resource
             resource_tokens = words(tool.resource) | words(label)
@@ -125,7 +132,7 @@ class Registry:
             self._entries[name] = Entry(
                 name=name, connector_id=manifest.id, tool=tool.name, connector_name=manifest.name,
                 site=site, resource=tool.resource, verb=tool.operation, label=label,
-                read_only=tool.read_only, description=tool.description,
+                read_only=tool.read_only, description=tool.description, status=statuses.get(tool.resource) or "ready",
                 input_schema=tool.input_schema, output_schema=tool.output_schema,
                 tokens=tokens, resource_tokens=resource_tokens,
             )
@@ -138,6 +145,9 @@ class Registry:
 
     def manifest(self, connector_id: str) -> Manifest | None:
         return self._manifests.get(connector_id)
+
+    def manifests(self) -> list[Manifest]:
+        return sorted(self._manifests.values(), key=lambda m: m.id)
 
     def connectors_for(self, site: str) -> list[Manifest]:
         try:

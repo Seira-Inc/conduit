@@ -14,9 +14,10 @@ from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 from mcp.server.transport_security import TransportSecuritySettings
 
 from .audit import Audit, argument_hash
+from .keep import degrade, should_degrade
 from .programs import ProgramError
 from .registry import Registry, _host_of
-from .tool_results import error_result, success_result
+from .tool_results import error_payload, error_result, success_result
 
 CONFIRM_TOKEN = {"type": "string", "description": "Returned by a first call that asked for confirmation; "
                                                   "pass it back once the user has agreed to the preview."}
@@ -112,7 +113,7 @@ def login_hint(connector_id: str) -> str:
 
 def build_gateway(*, registry: Registry, runtime_for, compile_jobs: dict, jobs: dict,
                   start_build=None, start_compilation=None, persist=None, cancel_job=None,
-                  model_available=lambda: True, audit: Audit | None = None) -> GatewayServer:
+                  model_available=lambda: True, audit: Audit | None = None, start_repair=None) -> GatewayServer:
     server = GatewayServer("seira", version="0.2.0", instructions=INSTRUCTIONS)
     sessions = weakref.WeakSet()
     confirmations: dict[str, tuple[str, str, float]] = {}
@@ -294,15 +295,40 @@ def build_gateway(*, registry: Registry, runtime_for, compile_jobs: dict, jobs: 
             runtime = runtime_for(entry.connector_id)
             result = await runtime.call(entry.tool, arguments)
         except Exception as exc:
-            if isinstance(exc, ProgramError) and persist and runtime is not None:
-                persist(runtime.manifest)
             record(tool=name, connector_id=entry.connector_id, verb=entry.verb, arguments=argument_hash(arguments),
                    approval=approval, outcome=getattr(exc, "code", type(exc).__name__),
                    duration_ms=round((time.perf_counter() - started) * 1000))
-            return error_result(exc)
+            if not isinstance(exc, ProgramError) or runtime is None:
+                return error_result(exc)
+            extra = {}
+            if should_degrade(exc) and degrade(runtime.manifest, entry.resource, exc):
+                extra.update(await repair(entry))
+            elif exc.code == "authentication_required":
+                extra["next"] = login_hint(entry.connector_id)
+            if persist:
+                persist(runtime.manifest)
+            if "degraded" in extra:
+                registry.invalidate(entry.connector_id)
+                registry.refresh()
+                await notify_tools_changed()
+            payload = json.dumps({**error_payload(exc), **extra})
+            return types.CallToolResult(content=[types.TextContent(type="text", text=payload)], isError=True)
         record(tool=name, connector_id=entry.connector_id, verb=entry.verb, arguments=argument_hash(arguments),
                approval=approval, outcome="ok", duration_ms=round((time.perf_counter() - started) * 1000))
         return success_result(result, entry.output_schema)
+
+    async def repair(entry) -> dict:
+        """The tool is withdrawn; a repair job takes it back through every gate before it returns."""
+        manual = f"python -m conduit repair {entry.connector_id} {entry.resource}"
+        if start_repair is None or not model_available():
+            return {"degraded": True, "next": f"The tool is withdrawn until it is repaired on this machine: `{manual}`."}
+        try:
+            job_id = start_repair(entry.connector_id, entry.resource)
+        except Exception as exc:
+            return {"degraded": True, "next": f"The tool is withdrawn; the repair could not start "
+                                              f"({as_local_error(exc)}). Repair it with `{manual}`."}
+        return {"degraded": True, "repair_job_id": job_id,
+                "next": "The tool is withdrawn and being repaired; call seira_status with repair_job_id."}
 
     @server.list_resources()
     async def list_resources():
@@ -314,13 +340,10 @@ def build_gateway(*, registry: Registry, runtime_for, compile_jobs: dict, jobs: 
             raise ValueError("Unknown resource")
         registry.refresh()
         rows = []
-        for connector_id in sorted({e.connector_id for e in registry.entries()}):
-            manifest = registry.manifest(connector_id)
-            if manifest is None:
-                continue
+        for manifest in registry.manifests():
             for capability in manifest.capabilities:
                 # Projected on purpose: compilation reports and findings can echo the build brief.
-                rows.append({"connector_id": connector_id, "name": manifest.name,
+                rows.append({"connector_id": manifest.id, "name": manifest.name,
                              "resource": capability.get("resource"), "label": capability.get("label"),
                              "status": capability.get("status"), "operations": capability.get("operations"),
                              "adapter_version": capability.get("adapter_version"),
