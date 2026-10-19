@@ -32,7 +32,7 @@ async def test_lists_only_verified_tools_with_honest_hints(app):
     async with create_connected_server_and_client_session(app.state.gateway) as session:
         listed = {t.name: t for t in (await session.list_tools()).tools}
     expected = {public_name("demo-1", f"records_{v}") for v in ("create", "read", "update", "delete")}
-    assert set(listed) == expected | {"seira_find", "seira_build", "seira_status"}
+    assert set(listed) == expected | {"seira_find", "seira_build", "seira_status", "seira_block", "seira_unblock"}
     read, delete = listed[READ], listed[public_name("demo-1", "records_delete")]
     assert read.annotations.readOnlyHint and not read.annotations.destructiveHint
     assert delete.annotations.destructiveHint and not delete.annotations.readOnlyHint

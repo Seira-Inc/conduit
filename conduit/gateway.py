@@ -14,10 +14,12 @@ from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 from mcp.server.transport_security import TransportSecuritySettings
 
 from .audit import Audit, argument_hash
+from .checker import rerank
 from .keep import degrade, should_degrade
 from .programs import ProgramError
 from .registry import Registry, _host_of
 from .tool_results import error_payload, error_result, success_result
+from .users import LOCAL, Users, hidden, refused
 
 CONFIRM_TOKEN = {"type": "string", "description": "Returned by a first call that asked for confirmation; "
                                                   "pass it back once the user has agreed to the preview."}
@@ -34,6 +36,29 @@ INSTRUCTIONS = (
 )
 
 ANY_OBJECT = {"type": "object"}
+
+BLOCK_SCHEMA = {"type": "object", "properties": {
+    "user": {"type": "string", "description": "The user's name in users.json"},
+    "site": {"type": "string", "description": "A site origin, to cover every tool on it"},
+    "tool": {"type": "string", "description": "A tool name from the catalog"},
+    "record": {"type": "string", "description": "One record id; the tool stays, that id is refused"}},
+    "required": ["user"]}
+
+ADMIN_TOOLS = [
+    types.Tool(
+        name="seira_block",
+        description="Admin only: keep one user away from a site, a tool, or one record on a tool. "
+                    "Name the user and at least one of site, tool or record.",
+        inputSchema=BLOCK_SCHEMA, outputSchema=ANY_OBJECT,
+        annotations=types.ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False),
+    ),
+    types.Tool(
+        name="seira_unblock",
+        description="Admin only: lift a block made with seira_block (same arguments).",
+        inputSchema=BLOCK_SCHEMA, outputSchema=ANY_OBJECT,
+        annotations=types.ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False),
+    ),
+]
 
 META_TOOLS = [
     types.Tool(
@@ -82,13 +107,33 @@ class GatewayServer(Server):
             notification_options or NotificationOptions(tools_changed=True), *args, **kwargs)
 
 
-class McpEndpoint:
-    """A Starlette route needs a bare ASGI callable; a function would be wrapped as a request handler."""
+def bearer_key(headers) -> str | None:
+    value = headers.get("authorization") or headers.get(b"authorization")
+    if isinstance(value, bytes):
+        value = value.decode("latin-1")
+    if value and value.lower().startswith("bearer "):
+        return value[7:].strip()
+    return None
 
-    def __init__(self, manager: StreamableHTTPSessionManager):
-        self.manager = manager
+
+class McpEndpoint:
+    """A Starlette route needs a bare ASGI callable; a function would be wrapped as a request handler.
+    Once users.json names anyone, every request must carry one of its keys."""
+
+    def __init__(self, manager: StreamableHTTPSessionManager, users: Users | None = None):
+        self.manager, self.users = manager, users
 
     async def __call__(self, scope, receive, send):
+        if self.users is not None and self.users.enabled:
+            headers = {k.decode("latin-1").lower(): v for k, v in scope.get("headers", [])}
+            if self.users.by_key(bearer_key(headers)) is None:
+                body = json.dumps({"error": "unauthorized", "detail": "Send a Seira user key: "
+                                   "Authorization: Bearer <key>. Keys come from `conduit users add`."}).encode()
+                await send({"type": "http.response.start", "status": 401, "headers": [
+                    (b"content-type", b"application/json"), (b"www-authenticate", b"Bearer"),
+                    (b"content-length", str(len(body)).encode())]})
+                await send({"type": "http.response.body", "body": body})
+                return
         await self.manager.handle_request(scope, receive, send)
 
 
@@ -113,14 +158,29 @@ def login_hint(connector_id: str) -> str:
 
 def build_gateway(*, registry: Registry, runtime_for, compile_jobs: dict, jobs: dict,
                   start_build=None, start_compilation=None, persist=None, cancel_job=None,
-                  model_available=lambda: True, audit: Audit | None = None, start_repair=None) -> GatewayServer:
+                  model_available=lambda: True, audit: Audit | None = None, start_repair=None,
+                  users: Users | None = None, home=None) -> GatewayServer:
     server = GatewayServer("seira", version="0.2.0", instructions=INSTRUCTIONS)
     sessions = weakref.WeakSet()
     confirmations: dict[str, tuple[str, str, float]] = {}
 
+    def current_user() -> dict | None:
+        """The caller: a users.json entry by its key, or the local admin while no users exist. A
+        transport without HTTP headers (stdio, tests) is the local machine."""
+        if users is None or not users.enabled:
+            return LOCAL
+        try:
+            request = server.request_context.request
+        except LookupError:
+            request = None
+        if request is None:
+            return LOCAL
+        return users.by_key(bearer_key(request.headers))
+
     def record(**fields):
         if audit is not None:
-            audit.record(user="local", **fields)
+            user = current_user()
+            audit.record(user=user["name"] if user else "unknown", **fields)
 
     def supports_elicitation() -> bool:
         try:
@@ -178,6 +238,7 @@ def build_gateway(*, registry: Registry, runtime_for, compile_jobs: dict, jobs: 
     async def list_tools():
         registry.refresh()
         remember_session()
+        user = current_user() or {"name": "unknown", "role": "member", "blocks": []}
         tools = [
             types.Tool(
                 name=e.name,
@@ -194,9 +255,41 @@ def build_gateway(*, registry: Registry, runtime_for, compile_jobs: dict, jobs: 
                     openWorldHint=True,
                 ),
             )
-            for e in registry.entries()
+            for e in registry.entries() if not hidden(user, site=e.site, tool=e.name)
         ]
-        return tools + META_TOOLS
+        return tools + META_TOOLS + (ADMIN_TOOLS if user["role"] == "admin" else [])
+
+    async def find(arguments: dict) -> dict:
+        registry.refresh()
+        request = arguments.get("request", "")
+        found = registry.find(request, arguments.get("site"))
+        candidates = [registry.lookup(n) for n in found.get("candidates", [])]
+        if found["status"] == "none" and candidates and model_available():
+            try:
+                choice = await rerank(request, [c for c in candidates if c], home)
+            except Exception as exc:
+                found["checker_error"] = str(exc)[:200]
+            else:
+                if choice:
+                    return choice
+                found["checker"] = "none of the candidates fit"
+        return found
+
+    async def admin(name: str, arguments: dict) -> types.CallToolResult:
+        user = current_user()
+        if user is None or user["role"] != "admin":
+            return refusal("admin_only", "Only an admin can block or unblock.")
+        if users is None:
+            return refusal("no_users", "This gateway has no users.json; blocks need named users.")
+        rule = {k: arguments.get(k) for k in ("site", "tool", "record")}
+        try:
+            blocks = (users.block if name == "seira_block" else users.unblock)(arguments.get("user", ""), **rule)
+        except ValueError as exc:
+            return error_result(exc)
+        await notify_tools_changed()
+        record(tool=name, connector_id=None, verb="admin", arguments=argument_hash(arguments),
+               approval="admin", outcome="ok")
+        return success_result({"status": "ok", "user": arguments.get("user"), "blocks": blocks}, ANY_OBJECT)
 
     def status(job_id: str, cancel: bool = False) -> dict:
         job = jobs.get(job_id)
@@ -271,8 +364,9 @@ def build_gateway(*, registry: Registry, runtime_for, compile_jobs: dict, jobs: 
     async def call_tool(name: str, arguments: dict):
         arguments = arguments or {}
         if name == "seira_find":
-            registry.refresh()
-            return success_result(registry.find(arguments.get("request", ""), arguments.get("site")), ANY_OBJECT)
+            return success_result(await find(arguments), ANY_OBJECT)
+        if name in ("seira_block", "seira_unblock"):
+            return await admin(name, arguments)
         if name == "seira_status":
             return success_result(status(arguments.get("job_id", ""), bool(arguments.get("cancel"))), ANY_OBJECT)
         if name == "seira_build":
@@ -280,6 +374,11 @@ def build_gateway(*, registry: Registry, runtime_for, compile_jobs: dict, jobs: 
         entry = registry.lookup(name)
         if entry is None:
             return error_result(ValueError("Unknown or unverified tool: " + name))
+        user = current_user()
+        if user is None or refused(user, site=entry.site, tool=entry.name, record=str(arguments.get("id", ""))):
+            record(tool=name, connector_id=entry.connector_id, verb=entry.verb, arguments=argument_hash(arguments),
+                   approval="none", outcome="forbidden")
+            return refusal("forbidden", "This tool, or this record, is blocked for you. Ask an admin.")
         if entry.connector_id in compile_jobs:
             payload = {"status": "error", "code": "connector_busy", "outcome_unknown": False, "mutation_retried": False,
                        "job_id": compile_jobs[entry.connector_id],
@@ -353,7 +452,8 @@ def build_gateway(*, registry: Registry, runtime_for, compile_jobs: dict, jobs: 
     return server
 
 
-def mount_gateway(app, server: GatewayServer, *, json_response: bool = False) -> StreamableHTTPSessionManager:
+def mount_gateway(app, server: GatewayServer, *, json_response: bool = False,
+                  users: Users | None = None) -> StreamableHTTPSessionManager:
     manager = StreamableHTTPSessionManager(
         app=server, json_response=json_response, stateless=False, max_request_body_size=200_000,
         security_settings=TransportSecuritySettings(
@@ -362,5 +462,5 @@ def mount_gateway(app, server: GatewayServer, *, json_response: bool = False) ->
             allowed_origins=["http://127.0.0.1:*", "http://localhost:*"],
         ),
     )
-    app.add_route("/mcp", McpEndpoint(manager), methods=["GET", "POST", "DELETE"])
+    app.add_route("/mcp", McpEndpoint(manager, users), methods=["GET", "POST", "DELETE"])
     return manager

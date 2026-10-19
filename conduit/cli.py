@@ -70,6 +70,12 @@ def main():
                           help="Explicit local source state directory whose protected session should be copied")
     commands.add_parser("upgrade", help="Update existing connector runtimes while preserving their settings")
     commands.add_parser("apps", help="List installed Windows apps")
+    users = commands.add_parser("users", help="People who may call the gateway, each with a key")
+    users_commands = users.add_subparsers(dest="users_command", required=True)
+    add_user = users_commands.add_parser("add", help="Create a user and print the key once")
+    add_user.add_argument("name")
+    add_user.add_argument("--admin", action="store_true", help="May block and unblock other users")
+    users_commands.add_parser("list", help="List users and their blocks")
     login = commands.add_parser("login", help="Sign in in an isolated browser")
     login.add_argument("connector_id")
     login.add_argument("--logged-in-text", help="Words that only a signed-in page shows, used to verify the sign-in")
@@ -207,6 +213,18 @@ def main():
             )
         elif args.command == "upgrade":
             print(json.dumps({"updated": Store(args.home).upgrade()}, indent=2))
+        elif args.command == "users":
+            from .users import Users
+
+            users = Users(Path(args.home) / "users.json")
+            if args.users_command == "add":
+                key = users.add(args.name, admin=args.admin)
+                print(f"User {args.name} added ({'admin' if args.admin else 'member'}). The key is shown once:")
+                print(key)
+                print("Connect Claude Code with it:")
+                print(f'  claude mcp add --transport http seira http://127.0.0.1:4455/mcp --header "Authorization: Bearer {key}"')
+            else:
+                print(json.dumps(users.all(), indent=2))
         elif args.command == "login":
             if args.channel:
                 os.environ["CONDUIT_BROWSER_CHANNEL"] = args.channel

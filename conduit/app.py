@@ -29,6 +29,7 @@ from .registry import Registry
 from .runtime import Runtime
 from .session_lock import SessionBusy
 from .tool_results import error_payload, safe_message
+from .users import Users
 
 STATIC = Path(__file__).with_name("static")
 
@@ -42,6 +43,7 @@ def create_app(home: Path | None = None, *, mcp_json_response: bool = False) -> 
     store = Store(home or Path(os.environ.get("CONDUIT_HOME", ".conduit")))
     registry = Registry(store)
     audit = Audit(store.home / "audit.jsonl")
+    users = Users(store.home / "users.json")
     runtimes, jobs, tasks, job_tasks = {}, {}, set(), {}
     build_slots = asyncio.Semaphore(2)
     compile_jobs = {}
@@ -65,6 +67,7 @@ def create_app(home: Path | None = None, *, mcp_json_response: bool = False) -> 
     app.state.store = store
     app.state.registry = registry
     app.state.audit = audit
+    app.state.users = users
     app.state.runtimes = runtimes
     app.state.jobs = jobs
     app.state.compile_jobs = compile_jobs
@@ -461,7 +464,8 @@ def create_app(home: Path | None = None, *, mcp_json_response: bool = False) -> 
     gateway = build_gateway(registry=registry, runtime_for=runtime_for, compile_jobs=compile_jobs, jobs=jobs,
                             start_build=start_site_build, start_compilation=start_compilation,
                             cancel_job=request_cancel, persist=store.write, audit=audit, start_repair=start_repair,
+                            users=users, home=store.home,
                             model_available=lambda: bool(model_settings().get("available")))
-    manager = mount_gateway(app, gateway, json_response=mcp_json_response)
+    manager = mount_gateway(app, gateway, json_response=mcp_json_response, users=users)
     app.state.gateway = gateway
     return app
