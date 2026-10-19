@@ -28,7 +28,7 @@ Fill `.env` with your own keys. It is ignored by git, as are `.conduit/` (connec
 python -m conduit --help
 ```
 
-Commands: `login`, `create`, `compile`, `verify`, `repair`, `optimize`, `hub`, `serve`, `list`, `ui`.
+Commands: `login`, `create`, `compile`, `verify`, `repair`, `optimize`, `hub`, `serve`, `list`, `users`, `ui`.
 
 ## The front door (local)
 
@@ -39,6 +39,18 @@ claude mcp add --transport http seira http://127.0.0.1:4455/mcp
 ```
 
 It lists every verified tool across your connectors, plus `seira_find` (is there a tool for this?), `seira_build` (build one just in time; returns a job id, the build takes minutes) and `seira_status` (how is that job doing?). The endpoint accepts requests with no `Origin` header or a localhost one, so browser-based MCP clients are refused by design. Claude Desktop keeps using `python -m conduit hub` over stdio until the gateway is reachable from the internet.
+
+What the endpoint enforces:
+
+- **Deletes ask first.** A client with elicitation gets a form; any other client gets `confirmation_required` with a preview and a one-use `confirm_token` to pass back once the user agrees.
+- **Every call is logged** to `<home>/audit.jsonl`: user, tool, argument hash, approval, outcome. Never values.
+- **A broken tool is withdrawn and repaired.** A program-breaking error marks the resource degraded, hides its tools and queues a repair; the error carries `repair_job_id` for `seira_status`, or the `conduit repair` command when no model is configured.
+- **A daily check** at `CONDUIT_DAILY_CHECK` (default `07:00`, `off` to disable) opens each stored session and records whether it still looks signed in; `POST /api/check` runs it now.
+- **Users and keys.** `python -m conduit users add <name> [--admin]` prints a key once. From the first user on, every request needs `Authorization: Bearer <key>`, and admins get `seira_block` and `seira_unblock` to keep one user away from a site, a tool, or one record:
+
+```bash
+claude mcp add --transport http seira http://127.0.0.1:4455/mcp --header "Authorization: Bearer <key>"
+```
 
 ## Tests
 

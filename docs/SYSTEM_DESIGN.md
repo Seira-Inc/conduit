@@ -214,7 +214,7 @@ When shortest is chosen, build it as a single operation and record which atomics
 
 - A tool runs as the user who signed in to the site, with that user's permissions. Seira never holds a password.
 - Today: `conduit login <id>` opens a headed browser (`cli.py:208-261`); cookies and localStorage are checkpointed on every browser event (`browser.py:443-469`); the state is encrypted with Windows DPAPI and bound to that Windows user (`secrets.py:8-36`; other OSes get plaintext JSON with chmod 600); it is loaded once at browser start (`browser.py:192`); one exclusive file lock per connector (`session_lock.py`).
-- Four open bugs, all found the first time an outside client drove a connector (problems\_encountered.md, Oct 4): (1) `browser_close` saves before releasing, so signed-out cookies can overwrite a good login; (2) a running server never re-reads the session file; (3) one owner, no handoff, so an expiring session strands any connected client; (4) `manifest.notes` ships build instructions to MCP clients (`mcp_server.py:36`). Fix all four in any tier: save only after `looks_signed_in` passes (`login.py:35`); reload the session file before each call; a lease with expiry instead of the lock; strip `notes` from the instructions.
+- Four bugs, all fixed Oct 18, found the first time an outside client drove a connector (problems\_encountered.md, Oct 4): (1) `browser_close` saves before releasing, so signed-out cookies can overwrite a good login; (2) a running server never re-reads the session file; (3) one owner, no handoff, so an expiring session strands any connected client; (4) `manifest.notes` ships build instructions to MCP clients (`mcp_server.py:36`). The fixes, in any tier: save only after `looks_signed_in` passes (`login.py:35`); reload the session file before each call; a lease with expiry instead of the lock; strip `notes` from the instructions.
 - Sessions are per (user, site) and never shared. A colleague runs your tool under their own login, so the site's own permissions apply and Seira never escalates anyone.
 - Decided Oct 18 (decision 2 in §10): v1 keeps sessions on the user's PC (§2); cloud sessions are a stretch opt-in in v1 and the default from v2 onward (§3 and §4).
 
@@ -275,11 +275,11 @@ The client talks only to the gateway; the gateway talks to the user's agent over
 
 **What to build, in order.**
 
-1. Gateway: a Streamable HTTP MCP server from the SDK; `tools/list` and `tools/call` backed by SQLite; the three meta tools; bearer-key auth first, OAuth when the identity provider is wired. Strip `notes` from the instructions (§1.9, bug 4).
-2. Agent client: wraps `app.py`'s runtime map; an outbound websocket carrying the user's key; executes `Runtime.call` and `compile_connector` jobs; streams progress; reports receipts. Fix session bugs 1 to 3 (§1.9) in the same change.
-3. Registry: the `tools` table (§1.2) plus a `users.json` for roles (§1.10); `seira_find` with a small model.
-4. Keep: degrade on failure, a repair job on the agent, republish; the daily read-only check runs from the agent while it is online.
-5. Ask: honest annotations; elicitation for delete where the client supports it (§1.5).
+1. Gateway: a Streamable HTTP MCP server from the SDK; `tools/list` and `tools/call` backed by SQLite; the three meta tools; bearer-key auth first, OAuth when the identity provider is wired. Strip `notes` from the instructions (§1.9, bug 4). Done Oct 18, with an in-memory index over `connector.json` instead of SQLite and bearer keys from `users.json`; OAuth and the cloud placement remain.
+2. Agent client: wraps `app.py`'s runtime map; an outbound websocket carrying the user's key; executes `Runtime.call` and `compile_connector` jobs; streams progress; reports receipts. Fix session bugs 1 to 3 (§1.9) in the same change. The three session bugs were fixed Oct 18. The websocket agent is deferred: the engine runs beside the gateway on one machine, and the split returns only for a user who must keep the engine on their own PC.
+3. Registry: the `tools` table (§1.2) plus a `users.json` for roles (§1.10); `seira_find` with a small model. Done Oct 18: `users.json` holds keys, roles and blocks, and the model is asked only when the deterministic match cannot decide.
+4. Keep: degrade on failure, a repair job on the agent, republish; the daily read-only check runs from the agent while it is online. Done Oct 18, with the repair in the gateway's job worker; the daily check judges each stored session and makes no read, because verification keeps no record id to read.
+5. Ask: honest annotations; elicitation for delete where the client supports it (§1.5). Done Oct 18, with a one-use `confirm_token` for clients without elicitation and an append-only `audit.jsonl`.
 
 **Customer zero.** The team: four agents, one gateway, the demo sites plus HubSpot's dummy portal. Then one design partner with two or three users.
 
@@ -349,7 +349,7 @@ The client talks only to the gateway; the gateway talks to the user's agent over
 **TL;DR**
 
 - Most of the loop exists: build, verify, run, confirm, and since Oct 18 a local front door and registry (`gateway.py`, `registry.py`). What is missing is everything around it: sessions off one PC, approval, update scheduling, roles, hosting.
-- `problems_encountered.md` has 17 open items; the four session bugs block every tier. The `notes` leak is closed (Oct 18).
+- `problems_encountered.md` lists what is still open; the four session bugs and the `notes` leak are closed (Oct 18). What blocks every tier now is the burned key in the shared Drive doc and the missing sign-in to Seira itself.
 - The burned API key still sitting in the shared Drive doc must be rotated before anything is hosted.
 
 | Step | Exists today (file) | Open problems touching it | To write |
@@ -358,12 +358,12 @@ The client talks only to the gateway; the gateway talks to the user's agent over
 | 2 Find | `generator.py` `Store`; `hub.py` verified-only listing; `registry.py` in-memory index refreshed by `connector.json` mtime; `seira_find`, `seira_build`, `seira_status` in `gateway.py` (Oct 18) | every connector carries a full package copy under `_runtime`; no SQLite until Keep and the cloud tiers | model-backed re-ranker behind `seira_find`; registry table with company scope |
 | 3 Build | `discovery.py`, `recorder.py`, `evidence.py`, `compiler.py`, `record_probe.py`, `programs.py`, `grounding.py`, `single_operation.py` | compiler prompt unversioned and untested; truncated model output gets closing braces added silently; form parser drops checkbox, radio, file and password forms; single-operation hardcodes `update`; unassisted canvas discovery never completed | async job with ETA; verb generalization; altitude taken from the request |
 | 4 Verify | `verifier.py`, `mcp_check.py`, the observer hook, `euphrates/tester.py` | no independent observer for Snipe-IT or Forms; the cleanup matcher deleted a sample contact | test-safe flag per site; measured `model_calls`; codebase engine deferred to v2 |
-| 5 Ask | annotations `mcp_server.py:48-53`; `state_guard.py`; read-before-write in `verifier.py` | none | elicitation for delete and irreversible actions; standing-approval scope |
+| 5 Ask | annotations in `mcp_server.py` and `gateway.py`; `state_guard.py`; read-before-write in `verifier.py`; delete confirmation in `gateway.py` (elicitation, else a one-use `confirm_token`) and `audit.py` (Oct 18) | none | the same card for money-moving and other irreversible actions; standing-approval scope |
 | 6 Run | `runtime.py`, `programs.py`, `net.py`, `browser.py` | 82 leaked browser processes; the recorder is passive, no intercept | per-user runtime map; warm contexts; reaper; progress |
 | 7 Confirm | `FamilyExecutor.settle`, `poll`, the persistence check | none | redaction in stored receipts |
-| 8 Keep | `compiler.repair_connector`, `mcp_check.verify_export`, `needs_attention` | `last_error` in memory only | status column; repair queue; daily check |
-| 9 Login | `login.py`, `browser.py` checkpoints, `secrets.py` DPAPI, `session_lock.py` | the four session bugs; a burned key in the shared Drive doc | the four fixes; session store per (user, site); URL elicitation |
-| 10 Company | nothing | none | companies, users, grants; scope-filtered list; admin tools |
+| 8 Keep | `compiler.repair_connector`, `mcp_check.verify_export`, `needs_attention`; `keep.py`: degraded status persisted, repair job, daily session check (Oct 18) | the daily check makes no read: verification keeps no record id | admin review of repaired write tools; repair with another user's session |
+| 9 Login | `login.py`, `browser.py` checkpoints with the save guard, `secrets.py` DPAPI, `session_lock.py` lease (Oct 18) | a burned key in the shared Drive doc | session store per (user, site); URL elicitation |
+| 10 Company | `users.py`: keys, admin or member, blocks by site, tool or record; `seira_block` and `seira_unblock` (Oct 18) | one users.json per machine, no companies | companies; identity-provider groups for the admin role |
 | Hosting | `app.py` (FastAPI, job workers, `build_slots`), `requirements.lock` | localhost only, by design | per tier (§2 to §4) |
 
 Crawl4AI stays optional and off by default; it is evidence, not a replacement for it.

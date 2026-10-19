@@ -33,6 +33,59 @@ Iminabo"). Iminabo amended and extended them on 2026-10-18, in `docs/SYSTEM_DESI
 6. **Tier 0 runs local-only first.** No tunnel, no VPS: gateway and runtime on one machine until
    the loop works end to end. Customer zero is Iminabo until the others are free.
 
+## 2026-10-18 — Tier 0 finished: steps 2 to 5
+
+Iminabo's call after the hackathon: finish Tier 0 well before moving to Tier 1, since everything
+but the websocket agent lifts to Tier 1 as it is. Four commits, each green on its own.
+
+**Session bugs (§1.9, all four closed).** `session_lock.py` is a lease with a five-minute expiry,
+renewed on every call and every minute while a call or compile runs; an idle or dead holder loses
+it, `conduit login` can take the session over, and the old holder closes without saving and
+re-acquires or reports busy. `BrowserSession.save` never writes a signed-out state over a stored
+session (a password field, or a sign-in control with no sign-out), and the login checkpoints obey
+the same rule. The session file's mtime is remembered at load; a sign-in elsewhere restarts the
+context before the next call. The real-browser persistence test passes with the lease.
+
+**Ask (§1.5).** A delete asks first: a form elicitation when the client advertises it, else the
+call returns `confirmation_required` with a preview and a one-use `confirm_token` (ten minutes)
+that the model passes back after showing the user. A decline runs nothing. Every connector tool
+call is appended to `audit.jsonl`: user, tool, argument hash, approval, outcome, duration; never
+values.
+
+**Keep (§1.8).** A program-breaking error (`locator_missing`, `postcondition_failed`,
+`browser_step_failed` and the like; never `object_missing`, a stale token or a sign-out) marks the
+resource `degraded` in `connector.json`, drops its tools from the catalog, sends
+`tools/list_changed` and queues a repair through the same gates; the caller gets `repair_job_id`,
+or the exact `conduit repair` command when no model is configured. A sign-out answers with the
+login steps. A daily check at `CONDUIT_DAILY_CHECK` (07:00; `off` disables; `POST /api/check`
+runs it now) opens each stored session and records whether it still looks signed in. It makes no
+read: verification keeps no record id.
+
+**Company (§1.10) and sign-in to Seira.** `users.json` under the home: `conduit users add <name>
+[--admin]` prints a key once with the `claude mcp add ... --header` line. From the first user on,
+every `/mcp` request needs `Authorization: Bearer <key>` (401 otherwise). A block on a site or a
+tool keeps it out of that user's catalog; a block on one record leaves the tool and refuses that
+id. Admins see `seira_block` and `seira_unblock`. Without the file the gateway serves one local
+admin, as before.
+
+**Find (§1.2).** `seira_find` asks a small model to pick among the candidates only when the
+deterministic match cannot decide (`checker.py`, low effort, 300 tokens), and says `checker: ...`
+in `why`.
+
+**Tests.** 192 passed, 1 skipped (was 176), plus the real-browser session test. Ruff clean.
+
+**Live run over the research home.** 19 tools (the two admin tools for the local admin); the
+HubSpot delete stopped at `confirmation_required` with a preview; `seira_find` deterministic; the
+daily check judged all four stored sessions (Vikunja, Microsoft Forms, Excalidraw, HubSpot) signed
+in within 11.8 s, which also settles the earlier HubSpot finding: the login-page title came from
+HubSpot bouncing an unknown record URL, not from an expired session.
+
+**Deferred.** The websocket agent (step 2's cloud-gateway split): the engine runs beside the
+gateway on one machine, and the split returns only for a user who must keep the engine on their
+own PC. The progress heartbeat. OAuth. InstaBox (a YC sponsor: full Linux VMs for agents with a
+virtual desktop a person can take over, Docker inside, public HTTPS ports, a vault) is the
+candidate box for Tier 1: run this Tier 0 there as one unit.
+
 ## 2026-10-18 — the Tier 0 front door
 
 **What exists now.** `conduit ui` also serves one Streamable HTTP MCP endpoint at

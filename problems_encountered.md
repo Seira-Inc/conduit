@@ -9,6 +9,38 @@ Dates are local (America/Chicago).
 Items with no single discovery date live under **Carried over from research** at the bottom; the
 full account of each is in `docs/research/problems_encountered.md`.
 
+## 2026-10-18 (finishing Tier 0)
+
+- **[resolved] `browser_close` saved state before releasing, so signed-out cookies could overwrite a
+  valid login.** `BrowserSession.save` now refuses to write over a stored session when the page
+  shows a password field or a sign-in control with no sign-out; the checkpoints taken during a
+  manual login get the same guard. A refusal comes back as `session_warning` on browser tools.
+
+- **[resolved] A refreshed session was invisible to a running server.** The session file's mtime is
+  kept from load time; a file rewritten by a sign-in elsewhere restarts the browser context before
+  the next call.
+
+- **[resolved] One client at a time, with no handoff.** The exclusive file lock is a lease with a
+  five-minute expiry (`session_lock.py`), renewed on every call and every minute while a call or
+  compile runs. An idle or dead holder loses it; `conduit login` can take the session over; the old
+  holder notices on its next call, closes without saving and re-acquires, or reports busy.
+
+- **[resolved] `last_error` lived in memory only.** A program-breaking error marks the resource
+  `degraded` in `connector.json`, hides its tools, notifies clients and queues a repair
+  (`keep.py`); a missing record, a stale token or a sign-out never degrades.
+
+- **[note] The daily check makes no read.** Verification deletes its disposable records and keeps
+  no id, so the check judges each stored session (signed in or not) and stops there. Measured on
+  the research home: four sites in 11.8 s.
+
+- **[note] `users.json` is off until the first `conduit users add`.** From then on every `/mcp`
+  request needs `Authorization: Bearer <key>`, including an existing `claude mcp add seira`
+  (re-add it with `--header`).
+
+- **[note] The checker's model call is unmeasured.** It uses the compiler's provider at low effort
+  with 300 output tokens and runs only when the deterministic match cannot decide; its cost per
+  call has not been recorded.
+
 ## 2026-10-18 (the front door)
 
 - **[resolved] The connector `notes` field shipped build instructions to MCP clients.** Three serve
@@ -85,14 +117,12 @@ full account of each is in `docs/research/problems_encountered.md`.
 ## Carried over from research (still open)
 
 Each of these is described in full, with its date, in `docs/research/problems_encountered.md`. The
-first five block every tier in `docs/SYSTEM_DESIGN.md`.
+first five blocked every tier in `docs/SYSTEM_DESIGN.md` and are closed as of 2026-10-18.
 
-- **[OPEN] `browser_close` saves state before releasing, so signed-out cookies can overwrite a valid
-  login.** Fix: save only after `looks_signed_in` passes (`conduit/login.py`).
-- **[OPEN] A refreshed session is invisible to a running MCP server.** Fix: reload the session file
-  before each call.
-- **[OPEN] One client at a time, with no handoff.** `session_lock.py` is an exclusive file lock;
-  fix: a lease with expiry.
+- **[resolved 2026-10-18] `browser_close` saved state before releasing, so signed-out cookies could
+  overwrite a valid login.** See the Tier 0 entry above.
+- **[resolved 2026-10-18] A refreshed session was invisible to a running MCP server.** See above.
+- **[resolved 2026-10-18] One client at a time, with no handoff.** A lease with expiry; see above.
 - **[resolved 2026-10-18] The connector `notes` field shipped build instructions to MCP clients.**
   See the front-door entry above.
 - **[resolved 2026-10-18] The front door did not exist.** See the front-door entry above.
