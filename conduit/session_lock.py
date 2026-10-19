@@ -1,51 +1,73 @@
-"""Prevent two MCP clients from overwriting one connector's browser-local state."""
+"""One holder per connector browser, for a bounded time. A holder that stops renewing (it crashed,
+or sits idle with the browser open) loses the lease, so a sign-in can take the browser over."""
 
+from __future__ import annotations
+
+import json
 import os
+import time
+from contextlib import suppress
 from pathlib import Path
+from uuid import uuid4
 
 
 class SessionBusy(ValueError):
     """Another process holds this connector's browser."""
 
 
-class SessionLock:
-    def __init__(self, path: Path):
-        self.path = path
-        self.file = None
+class SessionLease:
+    def __init__(self, path: Path, *, ttl: float = 300.0):
+        self.path, self.ttl = path, ttl
+        self.holder = f"{os.getpid()}:{uuid4().hex[:8]}"
+        self.held = False
 
-    def acquire(self):
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        handle = self.path.open("a+b")
-        if self.path.stat().st_size == 0:
-            handle.write(b"0")
-            handle.flush()
-        handle.seek(0)
+    def _current(self) -> dict | None:
         try:
-            if os.name == "nt":
-                import msvcrt
+            return json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
 
-                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-            else:
-                import fcntl
+    def _taken(self, current) -> bool:
+        return bool(current) and current.get("holder") != self.holder and current.get("expires", 0) > time.time()
 
-                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError as exc:
-            handle.close()
+    def _write(self) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self.path.with_suffix(".tmp")
+        temporary.write_text(json.dumps({"holder": self.holder, "pid": os.getpid(),
+                                         "expires": time.time() + self.ttl}), encoding="utf-8")
+        for attempt in range(3):
+            try:
+                temporary.replace(self.path)
+                break
+            except PermissionError:
+                if attempt == 2:
+                    raise
+                time.sleep(0.05)
+        self.held = True
+
+    def acquire(self) -> None:
+        current = self._current()
+        if self._taken(current):
+            left = max(1, int(current["expires"] - time.time()))
             raise SessionBusy(
-                "This connector is open in another client. Use Release preview in Conduit, browser_close in that MCP client, or close that client first."
-            ) from exc
-        self.file = handle
+                f"This connector's browser is held by another client for up to {left} more seconds. "
+                "Release it there (browser_close, or Release preview in Conduit) or wait; an idle holder "
+                "loses it on its own.")
+        self._write()
 
-    def release(self):
-        if self.file:
-            self.file.seek(0)
-            if os.name == "nt":
-                import msvcrt
+    def renew(self) -> bool:
+        """Extend the lease. False when another holder took it while this one was idle."""
+        if self._taken(self._current()):
+            self.held = False
+            return False
+        self._write()
+        return True
 
-                msvcrt.locking(self.file.fileno(), msvcrt.LK_UNLCK, 1)
-            else:
-                import fcntl
-
-                fcntl.flock(self.file.fileno(), fcntl.LOCK_UN)
-            self.file.close()
-            self.file = None
+    def release(self) -> None:
+        if not self.held:
+            return
+        self.held = False
+        current = self._current()
+        if current and current.get("holder") == self.holder:
+            with suppress(OSError):
+                self.path.unlink()

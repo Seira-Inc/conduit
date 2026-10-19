@@ -11,6 +11,7 @@ from urllib.parse import urljoin
 from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import async_playwright
 
+from .login import fingerprint, looks_signed_out
 from .models import Manifest, Tool, origin, schema
 from .net import NetworkPolicy
 from .recorder import Recorder
@@ -153,6 +154,8 @@ class BrowserSession:
         self.last_download = 0.0
         self._login_checkpoint_task = None
         self._login_checkpoint_saved = False
+        self.session_loaded_mtime = None
+        self.last_save_refusal = None
         self._login_activity = asyncio.Event()
         self.final_save_timeout = 30
         self.auth_restore_deadline = 0.0
@@ -189,7 +192,7 @@ class BrowserSession:
             self.context = await self.browser.new_context(
                 viewport={"width": 1280, "height": 800},
                 device_scale_factor=1,
-                storage_state=load_session(self.session_file),
+                storage_state=self._load_session(),
                 accept_downloads=True,
                 service_workers="block",
             )
@@ -436,9 +439,40 @@ class BrowserSession:
         await self.page.wait_for_timeout(160)
         return await self.snapshot()
 
-    async def save(self):
-        if self.context:
-            save_session(self.session_file, await self.context.storage_state(indexed_db=True))
+    def _session_mtime(self):
+        try:
+            return self.session_file.stat().st_mtime_ns
+        except OSError:
+            return None
+
+    def _load_session(self):
+        self.session_loaded_mtime = self._session_mtime()
+        return load_session(self.session_file)
+
+    def session_changed_on_disk(self) -> bool:
+        """Another process (a sign-in) rewrote the session file since this context loaded it."""
+        return self.context is not None and self._session_mtime() != self.session_loaded_mtime
+
+    async def _signed_out_reason(self):
+        page = self.page if self.page and not self.page.is_closed() else None
+        if page is None or not page.url.startswith(("http://", "https://")):
+            return None
+        return looks_signed_out(await fingerprint(page))
+
+    async def save(self) -> bool:
+        """Write the browser state, unless a stored session exists and the page shows it is signed out:
+        signed-out cookies must never replace a login that was valid."""
+        if not self.context:
+            return False
+        if self.session_file.exists():
+            reason = await self._signed_out_reason()
+            if reason:
+                self.last_save_refusal = reason
+                return False
+        save_session(self.session_file, await self.context.storage_state(indexed_db=True))
+        self.session_loaded_mtime = self._session_mtime()
+        self.last_save_refusal = None
+        return True
 
     async def _checkpoint_state(self):
         # storage_state() opens a temporary tab and navigates it to every origin the context has
@@ -458,8 +492,10 @@ class BrowserSession:
         """Protect this isolated login's state before a window or browser can disappear."""
         while self.browser and self.browser.is_connected():
             try:
-                save_session(self.session_file, await asyncio.wait_for(self._checkpoint_state(), 5))
-                self._login_checkpoint_saved = True
+                if not (self.session_file.exists() and await self._signed_out_reason()):
+                    save_session(self.session_file, await asyncio.wait_for(self._checkpoint_state(), 5))
+                    self.session_loaded_mtime = self._session_mtime()
+                    self._login_checkpoint_saved = True
             except Exception:
                 if not self.browser or not self.browser.is_connected():
                     return

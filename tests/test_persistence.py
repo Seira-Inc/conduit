@@ -3,11 +3,11 @@ import pytest
 from conduit.browser import browser_tools
 from conduit.models import Manifest
 from conduit.runtime import Runtime
-from conduit.session_lock import SessionLock
+from conduit.session_lock import SessionLease
 
 
 def test_session_excludes_concurrent_clients(tmp_path):
-    first, second = SessionLock(tmp_path / "test.lock"), SessionLock(tmp_path / "test.lock")
+    first, second = SessionLease(tmp_path / "test.lock"), SessionLease(tmp_path / "test.lock")
     first.acquire()
     try:
         with pytest.raises(ValueError, match="another client"):

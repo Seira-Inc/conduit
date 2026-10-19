@@ -110,7 +110,7 @@ async def optimize_connector(runtime, resource, *, progress=None, model=None, ma
         session = runtime.browser
         collector = EvidenceCollector(session, manifest)
         try:
-            runtime.acquire_browser()
+            await runtime.acquire_browser()
             await session.start()
             await update("Measuring the existing adapter's complete CRUD lifecycle")
             baseline = await verify_family(session, manifest, original, update)
@@ -123,7 +123,7 @@ async def optimize_connector(runtime, resource, *, progress=None, model=None, ma
             report["baseline_score"] = best_score
             feedback = []
             for turn in range(max_rounds):
-                runtime.acquire_browser()
+                await runtime.acquire_browser()
                 await session.start()
                 await update(f"Proposing a simpler or faster verified route ({turn + 1}/{max_rounds})")
                 evidence = await collector.collect()

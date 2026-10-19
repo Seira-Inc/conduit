@@ -400,7 +400,7 @@ async def compile_connector(runtime, *, progress=None, model=None, max_rounds=8,
         if progress:
             await progress(message)
     async with runtime.lock:
-        runtime.acquire_browser()
+        await runtime.acquire_browser()
         session, manifest = runtime.browser, runtime.manifest
         previous_tools = copy.deepcopy([t for t in manifest.tools if t.adapter == "program"])
         previous_capabilities = copy.deepcopy(manifest.capabilities)

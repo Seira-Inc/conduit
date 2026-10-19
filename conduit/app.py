@@ -344,7 +344,7 @@ def create_app(home: Path | None = None, *, mcp_json_response: bool = False) -> 
             try:
                 if action == "start":
                     await runtime.close()
-                    runtime.acquire_browser()
+                    await runtime.acquire_browser()
                     runtime.browser = BrowserSession(runtime.manifest, store.home, headed=True)
                     runtime.browser.manual_login = True
                     await runtime.browser.start()
@@ -388,7 +388,7 @@ def create_app(home: Path | None = None, *, mcp_json_response: bool = False) -> 
         if not runtime.browser:
             raise HTTPException(400, "Use desktop_snapshot to inspect the app's current controls.")
         async with runtime.lock:
-            runtime.acquire_browser()
+            await runtime.acquire_browser()
             await refresh_forms(runtime.manifest, runtime.browser)
             store.write(runtime.manifest)
         return {"message": "Updated the observed form tools. Restart connected MCP clients to reload them."}

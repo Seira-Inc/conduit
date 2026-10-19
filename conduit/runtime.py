@@ -10,7 +10,7 @@ from jsonschema import Draft202012Validator
 from .browser import BrowserSession
 from .models import Manifest
 from .net import NetworkPolicy, auth_values, fetch
-from .session_lock import SessionLock
+from .session_lock import SessionLease
 
 
 def scalar(value):
@@ -28,12 +28,32 @@ class Runtime:
         self.lock = asyncio.Lock()
         self.session_lock = None
         self.progress = None
+        self._lease_task = None
 
-    def acquire_browser(self):
-        if self.browser and self.session_lock is None:
-            lock = SessionLock(self.home / "locks" / (self.manifest.id + ".lock"))
-            lock.acquire()
-            self.session_lock = lock
+    async def acquire_browser(self):
+        """Hold the connector's browser lease. A lease another holder took while this one was idle
+        means handing the browser over: close it without saving and start again, or report busy.
+        A session file rewritten by a sign-in elsewhere is loaded by restarting the context."""
+        if not self.browser:
+            return
+        if self.session_lock is not None and not self.session_lock.renew():
+            await self.close(save=False)
+        if self.session_lock is None:
+            lease = SessionLease(self.home / "locks" / (self.manifest.id + ".lock"))
+            lease.acquire()
+            self.session_lock = lease
+        if self.browser.session_changed_on_disk() and not self.browser.manual_login:
+            await self.browser.close()
+        if self._lease_task is None or self._lease_task.done():
+            self._lease_task = asyncio.create_task(self._keep_lease())
+
+    async def _keep_lease(self):
+        # Renew only while something runs on this runtime: an idle browser lets its lease lapse so a
+        # sign-in in another process can take the session over.
+        while self.session_lock is not None:
+            await asyncio.sleep(self.session_lock.ttl / 5)
+            if self.session_lock is not None and self.lock.locked():
+                self.session_lock.renew()
 
     async def call(self, name: str, arguments: dict, progress=None):
         async with self.lock:
@@ -42,6 +62,8 @@ class Runtime:
                 return await self._call(name, arguments)
             finally:
                 self.progress = None
+                if self.session_lock is not None and self.session_lock.held:
+                    self.session_lock.renew()
 
     async def _call(self, name: str, arguments: dict):
         tool = next((t for t in self.manifest.tools if t.name == name), None)
@@ -65,7 +87,7 @@ class Runtime:
                 raise ValueError("This operation has not passed its required verification")
             if fingerprint(tool.config["family"]) != tool.config.get("fingerprint"):
                 raise ValueError("The compiled program changed; recompile and verify before running it")
-            self.acquire_browser()
+            await self.acquire_browser()
             try:
                 return await FamilyExecutor(self.browser, self.manifest, tool.config["family"]).call(
                     tool.operation, arguments)
@@ -84,7 +106,7 @@ class Runtime:
             if tool.operation == "close":
                 await self.close()
                 return {"closed": True}
-            self.acquire_browser()
+            await self.acquire_browser()
             try:
                 result = await self.browser.execute(tool.operation, arguments, tool.config)
             except Exception:
@@ -94,10 +116,16 @@ class Runtime:
                 raise
             if not self.browser.manual_login:
                 try:
-                    await self.browser.save()
+                    saved = await self.browser.save()
                 except Exception:
+                    saved = True
                     result["session_warning"] = (
                         "The action ran, but local browser state could not be saved. Keep this session open and run Conduit under your normal signed-in Windows account."
+                    )
+                if not saved and self.browser.last_save_refusal:
+                    result["session_warning"] = (
+                        "The page looks signed out (" + self.browser.last_save_refusal
+                        + "); the stored session was kept as it was. Sign in again with `conduit login`."
                     )
             return result
         if tool.adapter == "desktop":
@@ -154,10 +182,13 @@ class Runtime:
             result["body"] = result["body"][:50000]
         return result
 
-    async def close(self):
+    async def close(self, *, save=True):
         try:
+            if self._lease_task is not None:
+                self._lease_task.cancel()
+                self._lease_task = None
             if self.browser:
-                if self.browser.context and not self.browser.manual_login:
+                if save and self.browser.context and not self.browser.manual_login:
                     try:
                         await self.browser.save()
                     except Exception:

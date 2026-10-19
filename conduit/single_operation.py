@@ -43,7 +43,7 @@ async def serve(directory: Path, home: Path, *, testing=False):
                 raise ValueError("Unknown operation")
             Draft202012Validator(definition["input_schema"]).validate(arguments)
             async with runtime.lock:
-                runtime.acquire_browser()
+                await runtime.acquire_browser()
                 result = await FamilyExecutor(runtime.browser, runtime.manifest, definition["family"]).call(
                     "update", arguments)
             return types.CallToolResult(content=[types.TextContent(type="text", text=json.dumps(result))])

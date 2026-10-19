@@ -215,14 +215,14 @@ def main():
                 from .browser import BrowserSession
                 from .discovery import refresh_forms
                 from .login import confirm, fingerprint, watch_for_sign_in
-                from .session_lock import SessionLock
+                from .session_lock import SessionLease
 
                 store = Store(args.home)
                 manifest = store.get(args.connector_id)
                 if manifest.kind != "website":
                     raise ValueError("Sign in directly in the installed Windows app.")
                 session = BrowserSession(manifest, store.home, headed=True)
-                session_lock = SessionLock(store.home / "locks" / (manifest.id + ".lock"))
+                session_lock = SessionLease(store.home / "locks" / (manifest.id + ".lock"))
                 session_lock.acquire()
                 session.manual_login = True
                 try:

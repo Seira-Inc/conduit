@@ -49,6 +49,15 @@ def looks_signed_in(before, after, *, text=None, selector_found=None):
     return False, "no sign-out control or signed-in marker was found; " + HINT
 
 
+def looks_signed_out(after) -> str | None:
+    """A reason when the page shows it is signed out, else None; an unreadable page is not signed out."""
+    if after.get("password_inputs"):
+        return "a password field is visible"
+    if after.get("sign_in_controls") and not after.get("sign_out_controls"):
+        return "a sign-in control is visible and no sign-out control"
+    return None
+
+
 def _facts(fingerprint_dict):
     return {k: v for k, v in (fingerprint_dict or {}).items() if k != "text"}
 
